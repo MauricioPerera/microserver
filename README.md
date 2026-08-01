@@ -332,8 +332,95 @@ curl "http://localhost:8080/search?q=un+gato+tomando+una+siesta&limit=5&rerank=f
 
 **Errores:** `400` si falta `q`, o si `limit`/`rerank` son inválidos.
 
+## Colecciones
+
+`vec_items` (los endpoints `/items` y `/search` de arriba) es una tabla fija con un esquema fijo. Las **colecciones** son tablas adicionales, creadas a pedido, cada una con su propio nombre y forma de datos — para no estar atado a un solo esquema.
+
+Cada colección es o bien:
+- **Sin vector**: solo `id` + un campo `data` con cualquier JSON que quieras (objetos anidados, arrays, lo que sea) — un almacén de documentos simple, sin búsqueda semántica.
+- **Con vector**: además de `data`, tiene `text` (lo que se embebe y se busca) + los mismos dos vectores (float32 + binario) que `vec_items`. Mismo trade-off `rerank` que `/search`.
+
+Todos requieren auth.
+
+### `POST /collections`
+
+Crea una colección. `dimensions` es obligatorio (1–8192) si `vector` es `true`.
+
+**Body:**
+```json
+{"name": "documentos", "vector": true, "dimensions": 768}
+```
+
+**Respuesta:** `201 Created` con el objeto de la colección. `409` si ya existe. `400` si el nombre es inválido (debe matchear `^[a-zA-Z][a-zA-Z0-9_]{0,62}$` — sin espacios, guiones, puntos ni comillas) o si `dimensions` es inválido.
+
+```bash
+curl -X POST http://localhost:8080/collections -H "Authorization: Bearer $TOKEN" -d '{"name":"documentos","vector":true,"dimensions":768}'
+curl -X POST http://localhost:8080/collections -H "Authorization: Bearer $TOKEN" -d '{"name":"notas","vector":false}'
+```
+
+### `GET /collections`
+
+Lista las colecciones existentes.
+
+```bash
+curl http://localhost:8080/collections -H "Authorization: Bearer $TOKEN"
+```
+
+### `DELETE /collections/{name}`
+
+Borra la colección y todos sus items. `204` si se borró, `404` si no existía.
+
+```bash
+curl -X DELETE http://localhost:8080/collections/documentos -H "Authorization: Bearer $TOKEN"
+```
+
+### `POST /collections/{name}/items`
+
+Inserta un item. `text` es obligatorio solo si la colección tiene vector (es lo que se embebe); `data` es siempre opcional, cualquier JSON.
+
+**Body:**
+```json
+{"text": "el gato duerme en el sofá", "data": {"categoria": "animales"}, "id": 123}
+```
+
+**Respuesta:** `201 Created` con `{"id": N}`. `404` si la colección no existe. `400` si falta `text` en una colección con vector.
+
+```bash
+curl -X POST http://localhost:8080/collections/documentos/items -H "Authorization: Bearer $TOKEN" -d '{"text":"el gato duerme en el sofá","data":{"categoria":"animales"}}'
+curl -X POST http://localhost:8080/collections/notas/items -H "Authorization: Bearer $TOKEN" -d '{"data":{"titulo":"compras","items":["leche","pan"]}}'
+```
+
+### `GET /collections/{name}/items`
+
+Lista items (`limit`/`offset`, igual que `GET /items`).
+
+```bash
+curl "http://localhost:8080/collections/documentos/items?limit=10" -H "Authorization: Bearer $TOKEN"
+```
+
+### `PUT /collections/{name}/items/{id}`
+
+Reemplaza `text`/`data` de un item. Mismo requisito de `text` que el insert.
+
+```bash
+curl -X PUT http://localhost:8080/collections/notas/items/1 -H "Authorization: Bearer $TOKEN" -d '{"data":{"titulo":"compras","done":true}}'
+```
+
+### `DELETE /collections/{name}/items/{id}`
+
+Borra un item. `204`/`404`.
+
+### `GET /collections/{name}/search`
+
+Igual que `GET /search`, pero en una colección elegida. Solo válido si la colección tiene vector — `400` si no.
+
+```bash
+curl "http://localhost:8080/collections/documentos/search?q=un+gato+durmiendo&limit=5" -H "Authorization: Bearer $TOKEN"
+```
+
 ## Notas de arquitectura
 
 - **Escrituras**: un único pool de conexión (`SetMaxOpenConns(1)`) serializa los inserts/updates/deletes — SQLite nunca permite escritores concurrentes reales; esto evita errores de "database is locked" en vez de intentar paralelizar lo que no se puede.
 - **Lecturas**: pool separado con varias conexiones, no bloqueado por el escritor (modo WAL).
-- **UPDATE**: implementado como `DELETE` + `INSERT` en una transacción, no como `UPDATE` SQL directo — `vec0` (la virtual table de `sqlite-vec`) no reconoce correctamente el tipo binario cuantizado en su path de `UPDATE`.
+- **UPDATE**: implementado como `DELETE` + `INSERT` en una transacción, no como `UPDATE` SQL directo — `vec0` (la virtual table de `sqlite-vec`) no reconoce correctamente el tipo binario cuantizado en su path de `UPDATE`. Aplica también a colecciones con vector.
+- **Colecciones y nombres de tabla**: SQLite no permite parametrizar identificadores (nombres de tabla) en una consulta preparada, así que el nombre de colección se valida contra `^[a-zA-Z][a-zA-Z0-9_]{0,62}$` antes de interpolarlo en cualquier DDL — esa whitelist es toda la defensa contra inyección vía nombre de colección, no hay otra capa.
