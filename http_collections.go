@@ -255,6 +255,46 @@ func handleDeleteDocument(store *VecStore) http.HandlerFunc {
 	}
 }
 
+// handleAggregate: GET /collections/{name}/aggregate?op=sum&field=precio&group_by=categoria
+// op is required: count, sum, avg, min, max. field is required except for
+// count (bare count counts all matching rows; count with field counts
+// non-null occurrences of it). group_by is optional. Any other query param
+// filters rows before aggregating, same syntax as GET .../items.
+func handleAggregate(store *VecStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		coll, err := getCollection(store, r.PathValue("name"))
+		if err != nil {
+			if errors.Is(err, ErrCollectionNotFound) {
+				writeError(w, http.StatusNotFound, "collection not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		op := r.URL.Query().Get("op")
+		if op == "" {
+			writeError(w, http.StatusBadRequest, "op is required")
+			return
+		}
+		field := r.URL.Query().Get("field")
+		groupBy := r.URL.Query().Get("group_by")
+
+		filters, err := parseFilters(r.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		results, err := aggregateDocuments(store, coll, op, field, groupBy, filters)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, results)
+	}
+}
+
 // handleSearchDocuments: GET /collections/{name}/search?q=texto&limit=10&rerank=true
 // Any other query param filters by a top-level field of data, same syntax
 // as GET /collections/{name}/items. Combined with vector search, this is

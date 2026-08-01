@@ -45,6 +45,7 @@ func newRouter(store *VecStore, auth AuthConfig) http.Handler {
 	mux.Handle("PUT /collections/{name}/items/{id}", requireAuth(auth, handleUpdateDocument(store)))
 	mux.Handle("DELETE /collections/{name}/items/{id}", requireAuth(auth, handleDeleteDocument(store)))
 	mux.Handle("GET /collections/{name}/search", requireAuth(auth, handleSearchDocuments(store)))
+	mux.Handle("GET /collections/{name}/aggregate", requireAuth(auth, handleAggregate(store)))
 	return mux
 }
 

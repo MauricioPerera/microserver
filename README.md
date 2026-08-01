@@ -342,7 +342,7 @@ Cada colección es o bien:
 
 Las colecciones pueden **referenciarse entre sí** (ver `references` en `POST /collections` abajo) — un campo de `data` puede apuntar al id de un item en otra colección, validado en cada insert/update, con `restrict` o `set_null` al borrar el item referenciado.
 
-**Lo que esto NO es**, para no generar expectativas de más: no hay joins (`GET /collections/{name}/items/{id}` es el único lookup puntual — resolver una referencia son N llamadas, una por cada id), el filtrado y el orden (`GET .../items?campo=valor&sort=campo`) son solo sobre campos de nivel superior de `data`, un campo a la vez — nada de agregaciones (`COUNT`, `SUM`, `GROUP BY`) ni orden multi-columna, y no hay transacciones atómicas entre colecciones.
+**Lo que esto NO es**, para no generar expectativas de más: no hay joins (`GET /collections/{name}/items/{id}` es el único lookup puntual — resolver una referencia son N llamadas, una por cada id), el filtrado, el orden y las agregaciones son solo sobre campos de nivel superior de `data`, uno a la vez — nada de orden multi-columna ni `group_by` por más de un campo, y no hay transacciones atómicas entre colecciones.
 
 Todos requieren auth.
 
@@ -456,6 +456,28 @@ curl "http://localhost:8080/collections/documentos/search?q=un+gato+durmiendo&li
 **Filtrar + buscar es best-effort, no exacto** — verificado empíricamente contra `sqlite-vec`: al combinar `MATCH` con una condición extra, `vec0` exige un `k = N` que limita cuántos candidatos por cercanía se escanean *antes* de aplicar el filtro, no al revés. Si el único item que matchea el filtro está semánticamente lejos de la consulta (fuera de esos N más cercanos), no aparece — aunque sea el único resultado válido. Se usa el mismo margen (`oversampleFactor`, 8x) que ya se usa para el rerank, pero no hay garantía de encontrar todo lo que matchea si el dato filtrado es raro y semánticamente distinto de la búsqueda.
 
 **`sort` no cambia qué documentos se seleccionan, solo el orden final** — la selección de candidatos sigue gobernada por similitud vectorial (y los filtros, con el mismo trade-off de arriba); `sort` reordena el resultado ya elegido. También verificado empíricamente: `vec0` reconoce `ORDER BY distance` como parte especial de una consulta KNN — reemplazarlo por un campo de `data` dispara el mismo requisito de `k = N` que un filtro extra, aunque no haya ningún filtro.
+
+### `GET /collections/{name}/aggregate`
+
+Agregaciones sobre un campo de `data`, con `group_by` y filtros opcionales (misma sintaxis de filtro que `GET .../items`). No es específico de colecciones con vector — funciona igual en ambas.
+
+**Query params:**
+| Param | Requerido | Descripción |
+|---|---|---|
+| `op` | sí | `count`, `sum`, `avg`, `min`, `max` |
+| `field` | solo si `op` ≠ `count` | campo de `data` a agregar. Con `count` es opcional: sin `field` cuenta todas las filas (`COUNT(*)`), con `field` cuenta solo las no-null |
+| `group_by` | no | campo de `data` para agrupar |
+
+**Respuesta:** `200 OK`, siempre un array — un elemento si no hay `group_by`, uno por grupo si lo hay. `value` es `null` (no `0`) cuando el agregado no tiene filas sobre las que calcular (ej. `sum`/`avg`/`min`/`max` sin matches — así se distingue "no hay datos" de "los datos suman cero").
+
+```bash
+curl "http://localhost:8080/collections/productos/aggregate?op=count" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/collections/productos/aggregate?op=sum&field=precio" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/collections/productos/aggregate?op=avg&field=precio&categoria=perifericos" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/collections/productos/aggregate?op=sum&field=precio&group_by=categoria" -H "Authorization: Bearer $TOKEN"
+```
+
+**Errores:** `400` si `op` es inválido, si falta `field` para un op que lo requiere, o si algún nombre de campo/filtro es inválido. `404` si la colección no existe.
 
 ## Notas de arquitectura
 

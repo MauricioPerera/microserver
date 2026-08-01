@@ -32,6 +32,7 @@ type filterCondition struct {
 // treated as data filters.
 var reservedQueryParams = map[string]bool{
 	"limit": true, "offset": true, "q": true, "rerank": true, "sort": true,
+	"op": true, "field": true, "group_by": true,
 }
 
 // parseFilters turns query params other than the reserved ones into
