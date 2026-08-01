@@ -12,6 +12,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # sqlite_fts5 is required project-wide, not just for full-text search:
+    # any vector collection creates an FTS5 companion table, so without
+    # this tag SQLite has no fts5 module and vector collections fail
+    # outright at runtime. Setting GOFLAGS here means every go vet/build/
+    # test step below picks it up automatically, no per-step -tags needed.
+    env:
+      GOFLAGS: -tags=sqlite_fts5
     steps:
       - uses: actions/checkout@v4
 

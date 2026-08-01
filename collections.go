@@ -169,6 +169,11 @@ func createCollection(s *VecStore, name string, hasVector bool, dimensions int, 
 	if _, err := tx.Exec(ddl); err != nil {
 		return fmt.Errorf("creating collection table: %w", err)
 	}
+	if hasVector {
+		if err := createFullTextIndex(tx, &Collection{tableName: tableName}); err != nil {
+			return err
+		}
+	}
 
 	var dimsArg any
 	if hasVector {
@@ -455,6 +460,11 @@ func dropCollection(s *VecStore, name string) error {
 	if _, err := tx.Exec(fmt.Sprintf(`DROP TABLE %s`, quoteIdent(coll.tableName))); err != nil {
 		return fmt.Errorf("dropping collection table: %w", err)
 	}
+	if coll.HasVector {
+		if err := dropFullTextIndex(tx, coll); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(`DELETE FROM collections WHERE name = ?`, name); err != nil {
 		return fmt.Errorf("deregistering collection: %w", err)
 	}
@@ -498,6 +508,7 @@ func insertDocument(s *VecStore, coll *Collection, id *int64, text string, data 
 		if err != nil {
 			return 0, fmt.Errorf("serializing vector: %w", err)
 		}
+		var finalID int64
 		if id != nil {
 			if _, err := s.write.Exec(
 				fmt.Sprintf(`INSERT INTO %s(id, embedding, embedding_bit, text, data) VALUES (?, ?, vec_quantize_binary(?), ?, ?)`, table),
@@ -505,16 +516,24 @@ func insertDocument(s *VecStore, coll *Collection, id *int64, text string, data 
 			); err != nil {
 				return 0, fmt.Errorf("inserting document: %w", err)
 			}
-			return *id, nil
+			finalID = *id
+		} else {
+			res, err := s.write.Exec(
+				fmt.Sprintf(`INSERT INTO %s(embedding, embedding_bit, text, data) VALUES (?, vec_quantize_binary(?), ?, ?)`, table),
+				serialized, serialized, text, dataStr,
+			)
+			if err != nil {
+				return 0, fmt.Errorf("inserting document: %w", err)
+			}
+			finalID, err = res.LastInsertId()
+			if err != nil {
+				return 0, fmt.Errorf("getting inserted id: %w", err)
+			}
 		}
-		res, err := s.write.Exec(
-			fmt.Sprintf(`INSERT INTO %s(embedding, embedding_bit, text, data) VALUES (?, vec_quantize_binary(?), ?, ?)`, table),
-			serialized, serialized, text, dataStr,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("inserting document: %w", err)
+		if err := insertFullTextRow(s.write, coll, finalID, text); err != nil {
+			return 0, err
 		}
-		return res.LastInsertId()
+		return finalID, nil
 	}
 
 	if id != nil {
@@ -588,6 +607,13 @@ func updateDocument(s *VecStore, coll *Collection, id int64, text string, data j
 		return false, fmt.Errorf("updating document (insert step): %w", err)
 	}
 
+	if err := deleteFullTextRow(tx, coll, id); err != nil {
+		return false, err
+	}
+	if err := insertFullTextRow(tx, coll, id, text); err != nil {
+		return false, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("committing update: %w", err)
 	}
@@ -596,13 +622,22 @@ func updateDocument(s *VecStore, coll *Collection, id int64, text string, data j
 
 // deleteDocument removes an item by id. Returns false if no row had that
 // id. Before deleting, enforces on_delete for any other collection's
-// reference field pointing at this row (see checkReferentialDelete).
+// reference field pointing at this row (see checkReferentialDelete). For
+// vector collections, the full-text index row is removed in the same
+// transaction so the two never drift out of sync.
 func deleteDocument(s *VecStore, coll *Collection, id int64) (bool, error) {
 	if err := checkReferentialDelete(s, coll.Name, id); err != nil {
 		return false, err
 	}
 	table := quoteIdent(coll.tableName)
-	res, err := s.write.Exec(fmt.Sprintf(`DELETE FROM %s WHERE id = ?`, table), id)
+
+	tx, err := s.write.Begin()
+	if err != nil {
+		return false, fmt.Errorf("starting delete transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE id = ?`, table), id)
 	if err != nil {
 		return false, fmt.Errorf("deleting document: %w", err)
 	}
@@ -610,7 +645,20 @@ func deleteDocument(s *VecStore, coll *Collection, id int64) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("checking rows affected: %w", err)
 	}
-	return n > 0, nil
+	if n == 0 {
+		return false, nil
+	}
+
+	if coll.HasVector {
+		if err := deleteFullTextRow(tx, coll, id); err != nil {
+			return false, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("committing delete: %w", err)
+	}
+	return true, nil
 }
 
 // listDocuments returns items in a collection, ascending id order, paginated,

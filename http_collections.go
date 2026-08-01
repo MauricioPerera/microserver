@@ -295,6 +295,60 @@ func handleAggregate(store *VecStore) http.HandlerFunc {
 	}
 }
 
+// handleFullTextSearch: GET /collections/{name}/fulltext?q=texto&limit=10&offset=0
+// q is FTS5 query syntax as-is: AND/OR/NOT, "exact phrase", prefix* etc.
+// Only valid for vector collections (only those have a text field) — 400
+// otherwise. Accepts the same filters/sort as GET /collections/{name}/items.
+func handleFullTextSearch(store *VecStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		coll, err := getCollection(store, r.PathValue("name"))
+		if err != nil {
+			if errors.Is(err, ErrCollectionNotFound) {
+				writeError(w, http.StatusNotFound, "collection not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		q := r.URL.Query().Get("q")
+		if q == "" {
+			writeError(w, http.StatusBadRequest, "q is required")
+			return
+		}
+
+		limit, offset, ok := parseLimitOffset(w, r)
+		if !ok {
+			return
+		}
+
+		filters, err := parseFilters(r.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		sort, err := parseSort(r.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		docs, err := fullTextSearchDocuments(store, coll, q, limit, offset, filters, sort)
+		if err != nil {
+			if errors.Is(err, ErrCollectionNoFullText) {
+				writeError(w, http.StatusBadRequest, "collection has no text field, nothing to search")
+				return
+			}
+			// Any other error here is almost certainly malformed FTS5 query
+			// syntax from the client (unbalanced quotes, bad operator), not
+			// a server-side problem.
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, docs)
+	}
+}
+
 // handleSearchDocuments: GET /collections/{name}/search?q=texto&limit=10&rerank=true
 // Any other query param filters by a top-level field of data, same syntax
 // as GET /collections/{name}/items. Combined with vector search, this is

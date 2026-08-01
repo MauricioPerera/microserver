@@ -14,7 +14,12 @@ WORKDIR /src
 COPY . .
 
 # Dependencies are vendored (vendor/), so this needs no network access.
+# sqlite_fts5 is required, not optional: any vector collection creates an
+# FTS5 companion table for full-text search, so without this tag SQLite has
+# no fts5 module compiled in and vector collections fail outright at
+# runtime ("no such module: fts5") — not just full-text search.
 ENV CGO_ENABLED=1
+ENV GOFLAGS=-tags=sqlite_fts5
 RUN go build -o /out/microserver .
 
 # --- runtime stage ---

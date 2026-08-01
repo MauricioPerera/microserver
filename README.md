@@ -16,6 +16,7 @@ Servidor HTTP en Go que expone búsqueda semántica sobre SQLite (`sqlite-vec`),
 - Go 1.26+, con cgo habilitado (gcc/mingw en Windows).
 - [Ollama](https://ollama.com) corriendo en `localhost:11434` con el modelo `embeddinggemma` descargado.
 - Variables de entorno `AUTH_USERNAME` y `AUTH_PASSWORD` — el servidor no arranca sin ambas.
+- **Build tag `sqlite_fts5` obligatorio** — sin él, SQLite no trae compilado el módulo FTS5 y **toda colección con vector falla al crearse** (no solo la búsqueda full-text), porque cada una crea automáticamente un índice FTS5 asociado. Ver sección Build.
 
 ### Instalar Ollama
 
@@ -55,14 +56,23 @@ ollama list
 ## Correr el servidor
 
 ```bash
-AUTH_USERNAME=admin AUTH_PASSWORD=cambia-esto go run .
+AUTH_USERNAME=admin AUTH_PASSWORD=cambia-esto go run -tags sqlite_fts5 .
 ```
+
+`-tags sqlite_fts5` es obligatorio, no opcional — sin él cualquier colección con vector falla al crearse (ver sección Build).
 
 Escucha en `:8080`. Crea/usa `vec.db` en el directorio actual. Corre en background: checkpoint del WAL cada 5 min, backup rotado (`backups/`, conserva 7) cada 1h. `Ctrl+C` hace un checkpoint y backup final antes de salir.
 
 ## Build
 
 Las dependencias están vendorizadas (`vendor/`), así que `go build`/`go test` no necesitan red ni tocar el module cache — Go usa `vendor/` automáticamente si el directorio existe.
+
+**El tag `sqlite_fts5` es obligatorio**, no opcional — sin él el binario compila igual, pero cualquier `POST /collections` con `vector:true` falla en runtime con `no such module: fts5`. Seteá `GOFLAGS` una vez y todos los comandos de Go de abajo lo heredan sin repetirlo:
+
+```bash
+export GOFLAGS=-tags=sqlite_fts5   # Linux/macOS
+$env:GOFLAGS="-tags=sqlite_fts5"   # PowerShell
+```
 
 ```bash
 go build -o microserver.exe .   # Windows
@@ -73,7 +83,7 @@ Requiere `CGO_ENABLED=1` (es el default si Go detecta un compilador C) y gcc/min
 
 **Cross-compilation:** no funciona con solo `GOOS`/`GOARCH` como en un build 100% Go. Al usar cgo, compilar para un SO o arquitectura distinta a la máquina actual requiere un cross-compilador de C para el target (ej. `zig cc`, o un toolchain mingw/gcc específico). Lo más simple y confiable es compilar nativamente en cada plataforma destino.
 
-Verificar el binario antes de desplegar:
+Verificar el binario antes de desplegar (con `GOFLAGS` ya seteado como arriba):
 ```bash
 go vet ./...
 go test ./...
@@ -90,7 +100,7 @@ El binario resultante es autocontenido (SQLite y `sqlite-vec` quedan enlazados a
 ### Pasos
 
 ```bash
-go build -o microserver .
+go build -tags sqlite_fts5 -o microserver .
 scp microserver usuario@servidor:/opt/microserver/
 ssh usuario@servidor
 cd /opt/microserver
@@ -457,6 +467,29 @@ curl "http://localhost:8080/collections/documentos/search?q=un+gato+durmiendo&li
 
 **`sort` no cambia qué documentos se seleccionan, solo el orden final** — la selección de candidatos sigue gobernada por similitud vectorial (y los filtros, con el mismo trade-off de arriba); `sort` reordena el resultado ya elegido. También verificado empíricamente: `vec0` reconoce `ORDER BY distance` como parte especial de una consulta KNN — reemplazarlo por un campo de `data` dispara el mismo requisito de `k = N` que un filtro extra, aunque no haya ningún filtro.
 
+### `GET /collections/{name}/fulltext`
+
+Búsqueda de texto completo (FTS5) sobre el campo `text` — distinta de `GET .../search`, que busca por similitud semántica del embedding. Solo válido en colecciones con vector — `400` si no (las colecciones sin vector no tienen campo `text`, solo `data`). Acepta los mismos filtros y `sort` que `GET .../items`.
+
+`q` se pasa tal cual como sintaxis de consulta FTS5, no se sanitiza a una frase plana: soporta `AND`/`OR`/`NOT`, `"frase exacta"`, prefijo con `*`, etc.
+
+**Query params:**
+| Param | Requerido | Descripción |
+|---|---|---|
+| `q` | sí | consulta en sintaxis FTS5 |
+| `limit` | no | default 10 |
+| `offset` | no | default 0 |
+
+**Respuesta:** `200 OK`, ordenada por relevancia (`bm25`) salvo que se pase `sort`.
+
+```bash
+curl "http://localhost:8080/collections/documentos/fulltext?q=gato" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/collections/documentos/fulltext?q=%22frase+exacta%22" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/collections/documentos/fulltext?q=gato+AND+negro&categoria=animales" -H "Authorization: Bearer $TOKEN"
+```
+
+**Errores:** `400` si `q` falta, si la colección no tiene vector, o si `q` es sintaxis FTS5 inválida (ej. comillas sin cerrar) — cualquier error de ejecución de la consulta se trata como error del cliente, no del servidor, porque el único punto de falla ahí es la sintaxis que mandó el cliente.
+
 ### `GET /collections/{name}/aggregate`
 
 Agregaciones sobre un campo de `data`, con `group_by` y filtros opcionales (misma sintaxis de filtro que `GET .../items`). No es específico de colecciones con vector — funciona igual en ambas.
@@ -485,3 +518,4 @@ curl "http://localhost:8080/collections/productos/aggregate?op=sum&field=precio&
 - **Lecturas**: pool separado con varias conexiones, no bloqueado por el escritor (modo WAL).
 - **UPDATE**: implementado como `DELETE` + `INSERT` en una transacción, no como `UPDATE` SQL directo — `vec0` (la virtual table de `sqlite-vec`) no reconoce correctamente el tipo binario cuantizado en su path de `UPDATE`. Aplica también a colecciones con vector.
 - **Colecciones y nombres de tabla**: SQLite no permite parametrizar identificadores (nombres de tabla) en una consulta preparada, así que el nombre de colección se valida contra `^[a-zA-Z][a-zA-Z0-9_]{0,62}$` antes de interpolarlo en cualquier DDL — esa whitelist es toda la defensa contra inyección vía nombre de colección, no hay otra capa.
+- **Índice full-text (FTS5)**: cada colección con vector tiene una tabla FTS5 aparte (`coll_<nombre>_fts`), sincronizada a mano en Go en cada insert/update/delete — no con triggers de SQL sobre la tabla principal, porque esa tabla principal es una virtual table de `vec0` y no verificamos si los triggers funcionan bien ahí. `update`/`delete` la mantienen sincronizada dentro de la misma transacción que toca la tabla principal, así nunca quedan desincronizadas aunque algo falle a mitad de camino.
