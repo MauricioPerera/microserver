@@ -1,5 +1,7 @@
 # microserver
 
+[![CI](https://github.com/MauricioPerera/microserver/actions/workflows/ci.yml/badge.svg)](https://github.com/MauricioPerera/microserver/actions/workflows/ci.yml)
+
 Servidor HTTP en Go que expone búsqueda semántica sobre SQLite (`sqlite-vec`), usando `embeddinggemma` vía Ollama para generar los embeddings.
 
 ## Requisitos
