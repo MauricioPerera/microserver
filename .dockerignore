@@ -1,0 +1,8 @@
+vec.db
+vec.db-wal
+vec.db-shm
+backups/
+*.exe
+microserver
+run.log
+.git

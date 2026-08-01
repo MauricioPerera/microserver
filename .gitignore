@@ -1,0 +1,7 @@
+vec.db
+vec.db-wal
+vec.db-shm
+backups/
+*.exe
+run.log
+.claude/
