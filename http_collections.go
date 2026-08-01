@@ -142,6 +142,8 @@ func handleGetDocument(store *VecStore) http.HandlerFunc {
 }
 
 // handleListDocuments: GET /collections/{name}/items?limit=100&offset=0
+// Any other query param filters by a top-level field of data: "campo=valor"
+// (equals) or "campo__op=valor" with op in eq/ne/lt/lte/gt/gte/like.
 func handleListDocuments(store *VecStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		coll, err := getCollection(store, r.PathValue("name"))
@@ -159,7 +161,13 @@ func handleListDocuments(store *VecStore) http.HandlerFunc {
 			return
 		}
 
-		docs, err := listDocuments(store, coll, limit, offset)
+		filters, err := parseFilters(r.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		docs, err := listDocuments(store, coll, limit, offset, filters)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -243,6 +251,9 @@ func handleDeleteDocument(store *VecStore) http.HandlerFunc {
 }
 
 // handleSearchDocuments: GET /collections/{name}/search?q=texto&limit=10&rerank=true
+// Any other query param filters by a top-level field of data, same syntax
+// as GET /collections/{name}/items. Combined with vector search, this is
+// best-effort, not exact — see searchDocuments' doc comment.
 func handleSearchDocuments(store *VecStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		coll, err := getCollection(store, r.PathValue("name"))
@@ -281,7 +292,13 @@ func handleSearchDocuments(store *VecStore) http.HandlerFunc {
 			rerank = b
 		}
 
-		docs, err := searchDocuments(store, coll, q, limit, rerank)
+		filters, err := parseFilters(r.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		docs, err := searchDocuments(store, coll, q, limit, rerank, filters)
 		if err != nil {
 			if errors.Is(err, ErrCollectionNotVector) {
 				writeError(w, http.StatusBadRequest, "collection has no vectors, nothing to search")

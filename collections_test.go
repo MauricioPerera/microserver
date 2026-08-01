@@ -105,7 +105,7 @@ func TestNonVectorCollectionDocuments(t *testing.T) {
 		t.Fatalf("insertDocument: %v", err)
 	}
 
-	docs, err := listDocuments(s, coll, 10, 0)
+	docs, err := listDocuments(s, coll, 10, 0, nil)
 	if err != nil {
 		t.Fatalf("listDocuments: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestNonVectorCollectionDocuments(t *testing.T) {
 		t.Fatal("expected updateDocument to find the item")
 	}
 
-	docs, _ = listDocuments(s, coll, 10, 0)
+	docs, _ = listDocuments(s, coll, 10, 0, nil)
 	if string(docs[0].Data) != string(newData) {
 		t.Fatalf("expected updated data %s, got %s", newData, docs[0].Data)
 	}
@@ -138,7 +138,7 @@ func TestNonVectorCollectionDocuments(t *testing.T) {
 		t.Fatal("expected deleteDocument to find the item")
 	}
 
-	docs, _ = listDocuments(s, coll, 10, 0)
+	docs, _ = listDocuments(s, coll, 10, 0, nil)
 	if len(docs) != 0 {
 		t.Fatalf("expected empty collection after delete, got %v", docs)
 	}
@@ -175,7 +175,7 @@ func TestVectorCollectionSearchAndTextRequired(t *testing.T) {
 		}
 	}
 
-	docs, err := searchDocuments(s, coll, "un gato tomando una siesta", 1, true)
+	docs, err := searchDocuments(s, coll, "un gato tomando una siesta", 1, true, nil)
 	if err != nil {
 		t.Fatalf("searchDocuments: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestVectorCollectionSearchAndTextRequired(t *testing.T) {
 		t.Fatalf("createCollection: %v", err)
 	}
 	plain, _ := getCollection(s, "notas")
-	if _, err := searchDocuments(s, plain, "algo", 1, true); err != ErrCollectionNotVector {
+	if _, err := searchDocuments(s, plain, "algo", 1, true, nil); err != ErrCollectionNotVector {
 		t.Fatalf("expected ErrCollectionNotVector, got %v", err)
 	}
 }

@@ -342,7 +342,7 @@ Cada colección es o bien:
 
 Las colecciones pueden **referenciarse entre sí** (ver `references` en `POST /collections` abajo) — un campo de `data` puede apuntar al id de un item en otra colección, validado en cada insert/update, con `restrict` o `set_null` al borrar el item referenciado.
 
-**Lo que esto NO es**, para no generar expectativas de más: no hay joins (`GET /collections/{name}/items/{id}` es el único lookup puntual — resolver una referencia son N llamadas, una por cada id), no hay filtrado por campos de `data` (solo paginar todo o buscar por vector), y no hay transacciones atómicas entre colecciones. Para casos como un CMS con "publicaciones de este autor, ordenadas por fecha" hace falta un lenguaje de consulta que hoy no existe.
+**Lo que esto NO es**, para no generar expectativas de más: no hay joins (`GET /collections/{name}/items/{id}` es el único lookup puntual — resolver una referencia son N llamadas, una por cada id), el filtrado (`GET .../items?campo=valor`) es solo por igualdad/comparación sobre campos de nivel superior — nada de ordenar por un campo de `data`, ni agregaciones (`COUNT`, `SUM`, `GROUP BY`), y no hay transacciones atómicas entre colecciones.
 
 Todos requieren auth.
 
@@ -408,11 +408,15 @@ curl -X POST http://localhost:8080/collections/notas/items -H "Authorization: Be
 
 ### `GET /collections/{name}/items`
 
-Lista items (`limit`/`offset`, igual que `GET /items`).
+Lista items (`limit`/`offset`, igual que `GET /items`). Cualquier otro query param filtra por un campo de nivel superior de `data`: `campo=valor` (equals) o `campo__op=valor` con `op` en `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `like`. Varios params se combinan con AND. Un item sin ese campo, o con el campo en `null`, no matchea nunca (comparación contra NULL en SQL).
 
 ```bash
-curl "http://localhost:8080/collections/documentos/items?limit=10" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/collections/productos/items?categoria=perifericos" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/collections/productos/items?precio__lt=50" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/collections/productos/items?categoria=perifericos&precio__gte=40" -H "Authorization: Bearer $TOKEN"
 ```
+
+**Errores:** `400` si el nombre de campo es inválido o el operador no existe.
 
 ### `GET /collections/{name}/items/{id}`
 
@@ -438,11 +442,14 @@ Borra un item. `204`/`404`. Si otras colecciones tienen items con referencia `re
 
 ### `GET /collections/{name}/search`
 
-Igual que `GET /search`, pero en una colección elegida. Solo válido si la colección tiene vector — `400` si no.
+Igual que `GET /search`, pero en una colección elegida. Solo válido si la colección tiene vector — `400` si no. Acepta los mismos filtros que `GET .../items` (búsqueda híbrida: similitud semántica + condición sobre `data`).
 
 ```bash
 curl "http://localhost:8080/collections/documentos/search?q=un+gato+durmiendo&limit=5" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8080/collections/documentos/search?q=un+gato+durmiendo&limit=5&fuente=wiki" -H "Authorization: Bearer $TOKEN"
 ```
+
+**Filtrar + buscar es best-effort, no exacto** — verificado empíricamente contra `sqlite-vec`: al combinar `MATCH` con una condición extra, `vec0` exige un `k = N` que limita cuántos candidatos por cercanía se escanean *antes* de aplicar el filtro, no al revés. Si el único item que matchea el filtro está semánticamente lejos de la consulta (fuera de esos N más cercanos), no aparece — aunque sea el único resultado válido. Se usa el mismo margen (`oversampleFactor`, 8x) que ya se usa para el rerank, pero no hay garantía de encontrar todo lo que matchea si el dato filtrado es raro y semánticamente distinto de la búsqueda.
 
 ## Notas de arquitectura
 

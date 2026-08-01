@@ -613,17 +613,24 @@ func deleteDocument(s *VecStore, coll *Collection, id int64) (bool, error) {
 	return n > 0, nil
 }
 
-// listDocuments returns items in a collection, ascending id order, paginated.
-func listDocuments(s *VecStore, coll *Collection, limit, offset int) ([]Document, error) {
+// listDocuments returns items in a collection, ascending id order, paginated,
+// optionally restricted by filters on top-level fields of data.
+func listDocuments(s *VecStore, coll *Collection, limit, offset int, filters []filterCondition) ([]Document, error) {
 	table := quoteIdent(coll.tableName)
+	whereSQL, whereArgs := filterWhereSQL(filters)
+	where := ""
+	if whereSQL != "" {
+		where = "WHERE " + whereSQL
+	}
 
 	var query string
 	if coll.HasVector {
-		query = fmt.Sprintf(`SELECT id, text, data FROM %s ORDER BY id LIMIT ? OFFSET ?`, table)
+		query = fmt.Sprintf(`SELECT id, text, data FROM %s %s ORDER BY id LIMIT ? OFFSET ?`, table, where)
 	} else {
-		query = fmt.Sprintf(`SELECT id, data FROM %s ORDER BY id LIMIT ? OFFSET ?`, table)
+		query = fmt.Sprintf(`SELECT id, data FROM %s %s ORDER BY id LIMIT ? OFFSET ?`, table, where)
 	}
-	rows, err := s.read.Query(query, limit, offset)
+	args := append(append([]any{}, whereArgs...), limit, offset)
+	rows, err := s.read.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing documents: %w", err)
 	}
@@ -648,10 +655,21 @@ func listDocuments(s *VecStore, coll *Collection, limit, offset int) ([]Document
 	return docs, rows.Err()
 }
 
-// searchDocuments runs KNN search within a vector collection. Same
-// rerank/binary-only tradeoff as queryText on the fixed table. Returns
-// ErrCollectionNotVector for collections without vectors.
-func searchDocuments(s *VecStore, coll *Collection, text string, limit int, rerank bool) ([]Document, error) {
+// searchDocuments runs KNN search within a vector collection, optionally
+// restricted by filters on top-level fields of data. Same rerank/binary-only
+// tradeoff as queryText on the fixed table. Returns ErrCollectionNotVector
+// for collections without vectors.
+//
+// Filtered search is best-effort, not exact: sqlite-vec's vec0 requires a
+// "k = N" bound alongside any extra WHERE condition, and that k limits how
+// many nearest-by-vector candidates are scanned *before* the filter is
+// applied — confirmed empirically, it does not filter first and then find
+// the K nearest among matches. A filter value that's rare and semantically
+// far from the query (e.g. one document out of thousands, unrelated to the
+// query text) can be missed entirely even though it's the only match. k is
+// set to limit*oversampleFactor as a mitigation, same knob used for rerank,
+// not a guarantee.
+func searchDocuments(s *VecStore, coll *Collection, text string, limit int, rerank bool, filters []filterCondition) ([]Document, error) {
 	if !coll.HasVector {
 		return nil, ErrCollectionNotVector
 	}
@@ -666,27 +684,63 @@ func searchDocuments(s *VecStore, coll *Collection, text string, limit int, rera
 		return nil, fmt.Errorf("serializing vector: %w", err)
 	}
 
+	whereSQL, whereArgs := filterWhereSQL(filters)
+	extraWhere := ""
+	if whereSQL != "" {
+		extraWhere = "AND " + whereSQL
+	}
+
 	var rows *sql.Rows
 	if !rerank {
-		rows, err = s.read.Query(fmt.Sprintf(`
-			SELECT id, text, data, distance
-			FROM %s
-			WHERE embedding_bit MATCH vec_quantize_binary(?)
-			ORDER BY distance
-			LIMIT ?`, table), serialized, limit)
-	} else {
-		rows, err = s.read.Query(fmt.Sprintf(`
-			WITH coarse_matches AS (
-				SELECT id, embedding, text, data
+		if len(filters) == 0 {
+			rows, err = s.read.Query(fmt.Sprintf(`
+				SELECT id, text, data, distance
 				FROM %s
 				WHERE embedding_bit MATCH vec_quantize_binary(?)
 				ORDER BY distance
-				LIMIT ?
-			)
-			SELECT id, text, data, vec_distance_L2(embedding, ?) AS distance
-			FROM coarse_matches
-			ORDER BY distance
-			LIMIT ?`, table), serialized, limit*oversampleFactor, serialized, limit)
+				LIMIT ?`, table), serialized, limit)
+		} else {
+			k := limit * oversampleFactor
+			args := append([]any{serialized, k}, whereArgs...)
+			args = append(args, limit)
+			rows, err = s.read.Query(fmt.Sprintf(`
+				SELECT id, text, data, distance
+				FROM %s
+				WHERE embedding_bit MATCH vec_quantize_binary(?) AND k = ? %s
+				ORDER BY distance
+				LIMIT ?`, table, extraWhere), args...)
+		}
+	} else {
+		coarseLimit := limit * oversampleFactor
+		if len(filters) == 0 {
+			rows, err = s.read.Query(fmt.Sprintf(`
+				WITH coarse_matches AS (
+					SELECT id, embedding, text, data
+					FROM %s
+					WHERE embedding_bit MATCH vec_quantize_binary(?)
+					ORDER BY distance
+					LIMIT ?
+				)
+				SELECT id, text, data, vec_distance_L2(embedding, ?) AS distance
+				FROM coarse_matches
+				ORDER BY distance
+				LIMIT ?`, table), serialized, coarseLimit, serialized, limit)
+		} else {
+			args := append([]any{serialized, coarseLimit}, whereArgs...)
+			args = append(args, coarseLimit, serialized, limit)
+			rows, err = s.read.Query(fmt.Sprintf(`
+				WITH coarse_matches AS (
+					SELECT id, embedding, text, data
+					FROM %s
+					WHERE embedding_bit MATCH vec_quantize_binary(?) AND k = ? %s
+					ORDER BY distance
+					LIMIT ?
+				)
+				SELECT id, text, data, vec_distance_L2(embedding, ?) AS distance
+				FROM coarse_matches
+				ORDER BY distance
+				LIMIT ?`, table, extraWhere), args...)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("searching documents: %w", err)
