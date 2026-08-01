@@ -16,6 +16,15 @@ const (
 	backupDir          = "backups"
 	backupKeep         = 7
 	defaultHTTPAddr    = "127.0.0.1:8080"
+
+	// generalRateLimit applies to every request (except /login, which has
+	// its own stricter limiter — see newRouter). Generous for legitimate
+	// use: a single client naturally can't exceed a few req/s anyway since
+	// every embed call takes ~200ms, so this exists to bound abuse/bugs,
+	// not to throttle normal traffic.
+	generalRateLimitPerSecond = 20
+	generalRateLimitBurst     = 40
+	rateLimiterPruneInterval  = 10 * time.Minute
 )
 
 func main() {
@@ -45,7 +54,11 @@ func main() {
 	log.Printf("maintenance running: checkpoint every %s, backup every %s to %q (keep %d)\n",
 		checkpointInterval, backupInterval, backupDir, backupKeep)
 
-	srv := &http.Server{Addr: httpAddr, Handler: newRouter(db, auth)}
+	generalLimiter := newRateLimiter(generalRateLimitPerSecond, generalRateLimitBurst)
+	generalLimiter.startPruneLoop(rateLimiterPruneInterval, stop)
+	handler := limitBodySize(maxRequestBodyBytes, rateLimitMiddleware(generalLimiter, newRouter(db, auth)))
+
+	srv := &http.Server{Addr: httpAddr, Handler: handler}
 	go func() {
 		log.Printf("listening on %s\n", httpAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

@@ -21,8 +21,7 @@ type createCollectionRequest struct {
 func handleCreateCollection(store *VecStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req createCollectionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 		if req.Name == "" {
@@ -91,8 +90,7 @@ func handleInsertDocument(store *VecStore) http.HandlerFunc {
 		}
 
 		var req documentRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 		if coll.HasVector && req.Text == "" {
@@ -201,8 +199,7 @@ func handleUpdateDocument(store *VecStore) http.HandlerFunc {
 		}
 
 		var req documentRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 		if coll.HasVector && req.Text == "" {

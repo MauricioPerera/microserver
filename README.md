@@ -539,6 +539,14 @@ curl "http://localhost:8080/collections/productos/aggregate?op=sum&field=precio&
 
 **Errores:** `400` si `op` es inválido, si falta `field` para un op que lo requiere, o si algún nombre de campo/filtro es inválido. `404` si la colección no existe.
 
+## Límites de la API
+
+- **Tamaño de body**: máximo 1 MiB por request. Pasarse devuelve `413 Payload Too Large` con el límite exacto en el mensaje.
+- **Rate limit general**: 20 req/s por IP, ráfaga de 40, sobre toda la API salvo `/login`. `429 Too Many Requests` con header `Retry-After` al pasarse.
+- **Rate limit de `/login`**: más estricto, 5 intentos/minuto por IP (ráfaga de 5) — no hay bloqueo de cuenta de otra forma, así que esto es lo único que frena fuerza bruta sobre la contraseña.
+
+**La IP que ve el rate limiter es la que llega por TCP a este proceso** — si corre detrás de Caddy (ver TLS arriba) sin configurar `X-Forwarded-For`, esa IP es siempre la del proxy, no la del visitante real. En ese despliegue el límite pasa a ser efectivamente global (protege el proceso/Ollama de saturarse), no por-cliente. No se confía en `X-Forwarded-For` por defecto — un cliente directo podría falsificarlo para eludir su propio límite.
+
 ## Notas de arquitectura
 
 - **Escrituras**: un único pool de conexión (`SetMaxOpenConns(1)`) serializa los inserts/updates/deletes — SQLite nunca permite escritores concurrentes reales; esto evita errores de "database is locked" en vez de intentar paralelizar lo que no se puede.

@@ -23,12 +23,28 @@ type searchResult struct {
 	Distance float64 `json:"distance"`
 }
 
+// loginRateLimit: 5 attempts/min per IP (burst 5, refilling at 5/60 per
+// second) — generous enough for a legitimate user fumbling their password
+// a couple of times, tight enough to make brute-forcing impractical. There
+// is no account lockout otherwise, so this is the only thing standing
+// between an attacker and unlimited password guesses.
+const (
+	loginRateLimitPerSecond = 5.0 / 60.0
+	loginRateLimitBurst     = 5
+)
+
 // newRouter wires up all routes. /health and /login are public; everything
-// else requires a valid bearer token issued by /login.
+// else requires a valid bearer token issued by /login. /login additionally
+// gets its own rate limiter (see loginRateLimit* above) — general API rate
+// limiting and body size limits are applied outside this function, as
+// middleware wrapping the handler main.go actually serves, so they don't
+// affect callers (tests included) that exercise this router directly.
 func newRouter(store *VecStore, auth AuthConfig) http.Handler {
+	loginLimiter := newRateLimiter(loginRateLimitPerSecond, loginRateLimitBurst)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
-	mux.HandleFunc("POST /login", handleLogin(auth))
+	mux.Handle("POST /login", rateLimitMiddleware(loginLimiter, handleLogin(auth)))
 
 	mux.Handle("GET /items", requireAuth(auth, handleList(store)))
 	mux.Handle("POST /items", requireAuth(auth, handleInsert(store)))
@@ -96,8 +112,7 @@ func handleList(store *VecStore) http.HandlerFunc {
 func handleInsert(store *VecStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req insertRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 		if req.Text == "" {
@@ -132,8 +147,7 @@ func handleUpdate(store *VecStore) http.HandlerFunc {
 		}
 
 		var req insertRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		if !decodeJSON(w, r, &req) {
 			return
 		}
 		if req.Text == "" {
