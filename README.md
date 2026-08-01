@@ -233,7 +233,7 @@ El token es stateless (sin sesión en el servidor) — se firma con una clave al
 
 ### `POST /items` — requiere auth
 
-Inserta un texto: se genera su embedding (`embeddinggemma`, 768 dims) y se guarda en float32 + binario cuantizado.
+Inserta un texto: se guarda tal cual (columna auxiliar, no indexada) y se genera su embedding (`embeddinggemma`, 768 dims), guardado en float32 + binario cuantizado.
 
 **Body:**
 ```json
@@ -254,7 +254,7 @@ curl -X POST http://localhost:8080/items -H "Authorization: Bearer $TOKEN" -d '{
 
 ### `GET /items` — requiere auth
 
-Lista los IDs existentes. La tabla no guarda el texto original, solo vectores — este endpoint devuelve únicamente IDs.
+Lista los items existentes (id + texto).
 
 **Query params:**
 | Param | Default | Descripción |
@@ -264,7 +264,7 @@ Lista los IDs existentes. La tabla no guarda el texto original, solo vectores �
 
 **Respuesta:** `200 OK`
 ```json
-[1, 2, 3]
+[{"id": 1, "text": "el gato duerme en el sofá"}, {"id": 2, "text": "un felino descansa sobre el mueble"}]
 ```
 
 ```bash
@@ -309,7 +309,7 @@ Búsqueda semántica por similitud (KNN).
 
 **Respuesta:** `200 OK`
 ```json
-[{"id": 1, "distance": 0.750674}, {"id": 2, "distance": 0.76079}]
+[{"id": 1, "text": "el gato duerme en el sofá", "distance": 0.750674}, {"id": 2, "text": "un felino descansa sobre el mueble", "distance": 0.76079}]
 ```
 
 **Modos de `rerank`:**

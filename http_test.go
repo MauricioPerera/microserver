@@ -245,21 +245,26 @@ func TestHTTPList(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	var listed []int64
+	var listed []Item
 	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
 		t.Fatalf("decoding list response: %v", err)
 	}
 	if len(listed) != len(ids) {
 		t.Fatalf("expected %d ids, got %d: %v", len(ids), len(listed), listed)
 	}
+	for i, it := range listed {
+		if it.Text != texts[0] && it.Text != texts[1] && it.Text != texts[2] {
+			t.Fatalf("item %d: unexpected text %q", i, it.Text)
+		}
+	}
 
 	// pagination: limit=1&offset=1 should return exactly the second id
 	resp2 := doAuthed(t, http.MethodGet, server.URL+"/items?limit=1&offset=1", nil)
 	defer resp2.Body.Close()
-	var page []int64
+	var page []Item
 	json.NewDecoder(resp2.Body).Decode(&page)
-	if len(page) != 1 || page[0] != listed[1] {
-		t.Fatalf("expected page [%d], got %v", listed[1], page)
+	if len(page) != 1 || page[0].ID != listed[1].ID {
+		t.Fatalf("expected page [%v], got %v", listed[1], page)
 	}
 }
 

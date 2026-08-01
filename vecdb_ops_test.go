@@ -85,12 +85,16 @@ func TestBackup(t *testing.T) {
 		t.Fatal("expected at least one result from restored backup")
 	}
 	var id int64
+	var text string
 	var distance float64
-	if err := rows.Scan(&id, &distance); err != nil {
+	if err := rows.Scan(&id, &text, &distance); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	if id != 1 && id != 2 {
 		t.Fatalf("expected cat sentence (id=1 or 2) from backup, got id=%d", id)
 	}
-	t.Logf("backup restored correctly: nearest neighbor id=%d distance=%f", id, distance)
+	if text != docs[id] {
+		t.Fatalf("expected restored text to match, got %q want %q", text, docs[id])
+	}
+	t.Logf("backup restored correctly: nearest neighbor id=%d text=%q distance=%f", id, text, distance)
 }

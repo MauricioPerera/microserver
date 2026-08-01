@@ -19,6 +19,7 @@ type insertResponse struct {
 
 type searchResult struct {
 	ID       int64   `json:"id"`
+	Text     string  `json:"text"`
 	Distance float64 `json:"distance"`
 }
 
@@ -47,7 +48,6 @@ const (
 )
 
 // handleList: GET /items?limit=100&offset=0
-// vec_items stores no original text, only vectors, so this returns ids only.
 func handleList(store *VecStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit := defaultListLimit
@@ -70,12 +70,12 @@ func handleList(store *VecStore) http.HandlerFunc {
 			offset = n
 		}
 
-		ids, err := listIDs(store, limit, offset)
+		items, err := listItems(store, limit, offset)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, ids)
+		writeJSON(w, http.StatusOK, items)
 	}
 }
 
@@ -205,7 +205,7 @@ func handleSearch(store *VecStore) http.HandlerFunc {
 		results := []searchResult{}
 		for rows.Next() {
 			var res searchResult
-			if err := rows.Scan(&res.ID, &res.Distance); err != nil {
+			if err := rows.Scan(&res.ID, &res.Text, &res.Distance); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}

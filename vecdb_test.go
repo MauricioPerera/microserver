@@ -31,14 +31,18 @@ func TestVecInsertAndQuery(t *testing.T) {
 			t.Fatal("expected at least one result")
 		}
 		var id int64
+		var text string
 		var distance float64
-		if err := rows.Scan(&id, &distance); err != nil {
+		if err := rows.Scan(&id, &text, &distance); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
 		if id != 1 && id != 2 {
 			t.Fatalf("expected nearest neighbor to be the cat sentence (id=1 or 2), got id=%d (distance=%f)", id, distance)
 		}
-		t.Logf("nearest neighbor: id=%d distance=%f", id, distance)
+		if text != docs[id] {
+			t.Fatalf("expected returned text to match stored text, got %q want %q", text, docs[id])
+		}
+		t.Logf("nearest neighbor: id=%d text=%q distance=%f", id, text, distance)
 	})
 
 	t.Run("rerank=false (binary-only, fast path)", func(t *testing.T) {
@@ -52,13 +56,14 @@ func TestVecInsertAndQuery(t *testing.T) {
 			t.Fatal("expected at least one result")
 		}
 		var id int64
+		var text string
 		var distance float64
-		if err := rows.Scan(&id, &distance); err != nil {
+		if err := rows.Scan(&id, &text, &distance); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
 		if id != 1 && id != 2 {
 			t.Fatalf("expected nearest neighbor to be the cat sentence (id=1 or 2), got id=%d (distance=%f)", id, distance)
 		}
-		t.Logf("nearest neighbor: id=%d distance=%f", id, distance)
+		t.Logf("nearest neighbor: id=%d text=%q distance=%f", id, text, distance)
 	})
 }

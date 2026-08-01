@@ -18,10 +18,13 @@ func init() {
 	sqlite_vec.Auto()
 }
 
+// "+text text" is a vec0 auxiliary column: stored as-is, unindexed, not
+// subject to the vector-typing rules that apply to embedding/embedding_bit.
 const schema = `CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 	id INTEGER PRIMARY KEY,
 	embedding FLOAT[768],
-	embedding_bit BIT[768]
+	embedding_bit BIT[768],
+	+text TEXT
 )`
 
 // VecStore splits reads and writes across two connection pools to the same
@@ -113,8 +116,8 @@ func insertText(s *VecStore, id int64, text string) error {
 		return fmt.Errorf("serializing vector: %w", err)
 	}
 	if _, err := s.write.Exec(
-		`INSERT INTO vec_items(id, embedding, embedding_bit) VALUES (?, ?, vec_quantize_binary(?))`,
-		id, serialized, serialized,
+		`INSERT INTO vec_items(id, embedding, embedding_bit, text) VALUES (?, ?, vec_quantize_binary(?), ?)`,
+		id, serialized, serialized, text,
 	); err != nil {
 		return fmt.Errorf("inserting vector: %w", err)
 	}
@@ -133,8 +136,8 @@ func insertTextAuto(s *VecStore, text string) (int64, error) {
 		return 0, fmt.Errorf("serializing vector: %w", err)
 	}
 	res, err := s.write.Exec(
-		`INSERT INTO vec_items(embedding, embedding_bit) VALUES (?, vec_quantize_binary(?))`,
-		serialized, serialized,
+		`INSERT INTO vec_items(embedding, embedding_bit, text) VALUES (?, vec_quantize_binary(?), ?)`,
+		serialized, serialized, text,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting vector: %w", err)
@@ -142,7 +145,8 @@ func insertTextAuto(s *VecStore, text string) (int64, error) {
 	return res.LastInsertId()
 }
 
-// updateText re-embeds text and replaces an existing item's vectors.
+// updateText re-embeds text and replaces an existing item's vectors and
+// stored text.
 //
 // This is implemented as delete+insert inside a transaction rather than a
 // plain SQL UPDATE. vec0's UPDATE path does not recognize the typed BLOB
@@ -181,8 +185,8 @@ func updateText(s *VecStore, id int64, text string) (bool, error) {
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO vec_items(id, embedding, embedding_bit) VALUES (?, ?, vec_quantize_binary(?))`,
-		id, serialized, serialized,
+		`INSERT INTO vec_items(id, embedding, embedding_bit, text) VALUES (?, ?, vec_quantize_binary(?), ?)`,
+		id, serialized, serialized, text,
 	); err != nil {
 		return false, fmt.Errorf("updating vector (insert step): %w", err)
 	}
@@ -193,24 +197,29 @@ func updateText(s *VecStore, id int64, text string) (bool, error) {
 	return true, nil
 }
 
-// listIDs returns existing item ids in ascending order, paginated. vec_items
-// stores no text, only vectors, so this is all there is to list.
-func listIDs(s *VecStore, limit, offset int) ([]int64, error) {
-	rows, err := s.read.Query(`SELECT id FROM vec_items ORDER BY id LIMIT ? OFFSET ?`, limit, offset)
+// Item is an id/text pair as returned by listItems.
+type Item struct {
+	ID   int64  `json:"id"`
+	Text string `json:"text"`
+}
+
+// listItems returns existing items in ascending id order, paginated.
+func listItems(s *VecStore, limit, offset int) ([]Item, error) {
+	rows, err := s.read.Query(`SELECT id, text FROM vec_items ORDER BY id LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("listing items: %w", err)
 	}
 	defer rows.Close()
 
-	ids := []int64{}
+	items := []Item{}
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scanning id: %w", err)
+		var it Item
+		if err := rows.Scan(&it.ID, &it.Text); err != nil {
+			return nil, fmt.Errorf("scanning item: %w", err)
 		}
-		ids = append(ids, id)
+		items = append(items, it)
 	}
-	return ids, rows.Err()
+	return items, rows.Err()
 }
 
 // deleteItem removes an item by id. Returns false if no row had that id.
@@ -239,6 +248,7 @@ func deleteItem(s *VecStore, id int64) (bool, error) {
 //
 // distance in the results is Hamming (integer bit count) when rerank=false,
 // and exact L2 when rerank=true — the two are not comparable across modes.
+// Every result also carries the item's stored text.
 func queryText(s *VecStore, text string, limit int, rerank bool) (*sql.Rows, error) {
 	vec, err := embed(text)
 	if err != nil {
@@ -251,7 +261,7 @@ func queryText(s *VecStore, text string, limit int, rerank bool) (*sql.Rows, err
 
 	if !rerank {
 		return s.read.Query(`
-			SELECT id, distance
+			SELECT id, text, distance
 			FROM vec_items
 			WHERE embedding_bit MATCH vec_quantize_binary(?)
 			ORDER BY distance
@@ -260,13 +270,13 @@ func queryText(s *VecStore, text string, limit int, rerank bool) (*sql.Rows, err
 
 	return s.read.Query(`
 		WITH coarse_matches AS (
-			SELECT id, embedding
+			SELECT id, embedding, text
 			FROM vec_items
 			WHERE embedding_bit MATCH vec_quantize_binary(?)
 			ORDER BY distance
 			LIMIT ?
 		)
-		SELECT id, vec_distance_L2(embedding, ?) AS distance
+		SELECT id, text, vec_distance_L2(embedding, ?) AS distance
 		FROM coarse_matches
 		ORDER BY distance
 		LIMIT ?`, serialized, limit*oversampleFactor, serialized, limit)
