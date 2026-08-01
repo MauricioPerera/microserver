@@ -65,6 +65,20 @@ jobs:
           printf '{"schemaVersion":1,"label":"binary size (linux\\/amd64)","message":"%s MB","color":"blue"}\n' "$MB" > /tmp/binary-size.json
           cat /tmp/binary-size.json
 
+      # Image isn't published anywhere (no Docker Hub/GHCR account wired
+      # up), so shields.io's built-in docker-image-size badge can't read
+      # it. Built here, measured, discarded — same self-hosted pattern as
+      # the other computed badges.
+      - name: Build Docker image
+        run: docker build -t microserver:ci .
+
+      - name: Compute Docker image size badge data
+        run: |
+          BYTES=$(docker image inspect microserver:ci --format='{{.Size}}')
+          MB=$(awk -v b="$BYTES" 'BEGIN { printf "%.1f", b/1024/1024 }')
+          printf '{"schemaVersion":1,"label":"docker image size","message":"%s MB","color":"blue"}\n' "$MB" > /tmp/docker-size.json
+          cat /tmp/docker-size.json
+
       # Deterministic check against the GitHub API's license detection for
       # each direct dependency in go.mod (not a heuristic scan of vendored
       # LICENSE files, which are incomplete for at least one dependency
@@ -110,5 +124,6 @@ jobs:
           cp /tmp/coverage.json coverage.json
           cp /tmp/deps-license.json deps-license.json
           cp /tmp/binary-size.json binary-size.json
-          git add coverage.json deps-license.json binary-size.json
+          cp /tmp/docker-size.json docker-size.json
+          git add coverage.json deps-license.json binary-size.json docker-size.json
           git diff --staged --quiet || (git commit -m "Update badges" && git push origin badges)
