@@ -615,7 +615,7 @@ func deleteDocument(s *VecStore, coll *Collection, id int64) (bool, error) {
 
 // listDocuments returns items in a collection, ascending id order, paginated,
 // optionally restricted by filters on top-level fields of data.
-func listDocuments(s *VecStore, coll *Collection, limit, offset int, filters []filterCondition) ([]Document, error) {
+func listDocuments(s *VecStore, coll *Collection, limit, offset int, filters []filterCondition, sort *sortSpec) ([]Document, error) {
 	table := quoteIdent(coll.tableName)
 	whereSQL, whereArgs := filterWhereSQL(filters)
 	where := ""
@@ -623,13 +623,20 @@ func listDocuments(s *VecStore, coll *Collection, limit, offset int, filters []f
 		where = "WHERE " + whereSQL
 	}
 
+	orderBy := "id"
+	var orderArgs []any
+	if sort != nil {
+		orderBy, orderArgs = sort.orderBySQL()
+	}
+
 	var query string
 	if coll.HasVector {
-		query = fmt.Sprintf(`SELECT id, text, data FROM %s %s ORDER BY id LIMIT ? OFFSET ?`, table, where)
+		query = fmt.Sprintf(`SELECT id, text, data FROM %s %s ORDER BY %s LIMIT ? OFFSET ?`, table, where, orderBy)
 	} else {
-		query = fmt.Sprintf(`SELECT id, data FROM %s %s ORDER BY id LIMIT ? OFFSET ?`, table, where)
+		query = fmt.Sprintf(`SELECT id, data FROM %s %s ORDER BY %s LIMIT ? OFFSET ?`, table, where, orderBy)
 	}
-	args := append(append([]any{}, whereArgs...), limit, offset)
+	args := append(append([]any{}, whereArgs...), orderArgs...)
+	args = append(args, limit, offset)
 	rows, err := s.read.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing documents: %w", err)
@@ -660,6 +667,11 @@ func listDocuments(s *VecStore, coll *Collection, limit, offset int, filters []f
 // tradeoff as queryText on the fixed table. Returns ErrCollectionNotVector
 // for collections without vectors.
 //
+// sort, if non-nil, reorders the final results by a data field instead of
+// distance — the candidate *selection* is still governed by vector
+// similarity (plus filters); sort only changes presentation order among
+// whatever got selected.
+//
 // Filtered search is best-effort, not exact: sqlite-vec's vec0 requires a
 // "k = N" bound alongside any extra WHERE condition, and that k limits how
 // many nearest-by-vector candidates are scanned *before* the filter is
@@ -669,7 +681,7 @@ func listDocuments(s *VecStore, coll *Collection, limit, offset int, filters []f
 // query text) can be missed entirely even though it's the only match. k is
 // set to limit*oversampleFactor as a mitigation, same knob used for rerank,
 // not a guarantee.
-func searchDocuments(s *VecStore, coll *Collection, text string, limit int, rerank bool, filters []filterCondition) ([]Document, error) {
+func searchDocuments(s *VecStore, coll *Collection, text string, limit int, rerank bool, filters []filterCondition, sort *sortSpec) ([]Document, error) {
 	if !coll.HasVector {
 		return nil, ErrCollectionNotVector
 	}
@@ -690,9 +702,19 @@ func searchDocuments(s *VecStore, coll *Collection, text string, limit int, rera
 		extraWhere = "AND " + whereSQL
 	}
 
+	finalOrderBy := "distance"
+	var sortArgs []any
+	if sort != nil {
+		finalOrderBy, sortArgs = sort.orderBySQL()
+	}
+
 	var rows *sql.Rows
 	if !rerank {
-		if len(filters) == 0 {
+		// vec0 only accepts the bare "MATCH ... ORDER BY distance LIMIT ?"
+		// form without an explicit "k = N" bound (verified empirically) —
+		// any extra WHERE condition, or any ORDER BY other than distance,
+		// needs k spelled out or the query is rejected outright.
+		if len(filters) == 0 && sort == nil {
 			rows, err = s.read.Query(fmt.Sprintf(`
 				SELECT id, text, data, distance
 				FROM %s
@@ -702,17 +724,25 @@ func searchDocuments(s *VecStore, coll *Collection, text string, limit int, rera
 		} else {
 			k := limit * oversampleFactor
 			args := append([]any{serialized, k}, whereArgs...)
+			args = append(args, sortArgs...)
 			args = append(args, limit)
 			rows, err = s.read.Query(fmt.Sprintf(`
 				SELECT id, text, data, distance
 				FROM %s
 				WHERE embedding_bit MATCH vec_quantize_binary(?) AND k = ? %s
-				ORDER BY distance
-				LIMIT ?`, table, extraWhere), args...)
+				ORDER BY %s
+				LIMIT ?`, table, extraWhere, finalOrderBy), args...)
 		}
 	} else {
 		coarseLimit := limit * oversampleFactor
+		// The coarse CTE always orders by distance internally regardless of
+		// sort — sort only changes the final presentation order over the
+		// candidates coarse selection already picked, never which
+		// candidates get picked.
 		if len(filters) == 0 {
+			args := []any{serialized, coarseLimit, serialized}
+			args = append(args, sortArgs...)
+			args = append(args, limit)
 			rows, err = s.read.Query(fmt.Sprintf(`
 				WITH coarse_matches AS (
 					SELECT id, embedding, text, data
@@ -723,11 +753,13 @@ func searchDocuments(s *VecStore, coll *Collection, text string, limit int, rera
 				)
 				SELECT id, text, data, vec_distance_L2(embedding, ?) AS distance
 				FROM coarse_matches
-				ORDER BY distance
-				LIMIT ?`, table), serialized, coarseLimit, serialized, limit)
+				ORDER BY %s
+				LIMIT ?`, table, finalOrderBy), args...)
 		} else {
 			args := append([]any{serialized, coarseLimit}, whereArgs...)
-			args = append(args, coarseLimit, serialized, limit)
+			args = append(args, coarseLimit, serialized)
+			args = append(args, sortArgs...)
+			args = append(args, limit)
 			rows, err = s.read.Query(fmt.Sprintf(`
 				WITH coarse_matches AS (
 					SELECT id, embedding, text, data
@@ -738,8 +770,8 @@ func searchDocuments(s *VecStore, coll *Collection, text string, limit int, rera
 				)
 				SELECT id, text, data, vec_distance_L2(embedding, ?) AS distance
 				FROM coarse_matches
-				ORDER BY distance
-				LIMIT ?`, table, extraWhere), args...)
+				ORDER BY %s
+				LIMIT ?`, table, extraWhere, finalOrderBy), args...)
 		}
 	}
 	if err != nil {

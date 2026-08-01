@@ -166,8 +166,13 @@ func handleListDocuments(store *VecStore) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		sort, err := parseSort(r.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 
-		docs, err := listDocuments(store, coll, limit, offset, filters)
+		docs, err := listDocuments(store, coll, limit, offset, filters, sort)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -297,8 +302,13 @@ func handleSearchDocuments(store *VecStore) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		sort, err := parseSort(r.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 
-		docs, err := searchDocuments(store, coll, q, limit, rerank, filters)
+		docs, err := searchDocuments(store, coll, q, limit, rerank, filters, sort)
 		if err != nil {
 			if errors.Is(err, ErrCollectionNotVector) {
 				writeError(w, http.StatusBadRequest, "collection has no vectors, nothing to search")

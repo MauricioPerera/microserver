@@ -47,7 +47,7 @@ func TestListDocumentsWithFilters(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			docs, err := listDocuments(s, coll, 100, 0, c.filters)
+			docs, err := listDocuments(s, coll, 100, 0, c.filters, nil)
 			if err != nil {
 				t.Fatalf("listDocuments: %v", err)
 			}
@@ -102,7 +102,7 @@ func TestSearchDocumentsWithFilter(t *testing.T) {
 	}
 
 	filters := []filterCondition{{field: "cat", sqlOp: "=", value: "a"}}
-	docs, err := searchDocuments(s, coll, "un gato tomando una siesta", 5, true, filters)
+	docs, err := searchDocuments(s, coll, "un gato tomando una siesta", 5, true, filters, nil)
 	if err != nil {
 		t.Fatalf("searchDocuments with filter: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestSearchDocumentsWithFilter(t *testing.T) {
 	}
 
 	// same filter, rerank=false path
-	docs, err = searchDocuments(s, coll, "un gato tomando una siesta", 5, false, filters)
+	docs, err = searchDocuments(s, coll, "un gato tomando una siesta", 5, false, filters, nil)
 	if err != nil {
 		t.Fatalf("searchDocuments (no rerank) with filter: %v", err)
 	}

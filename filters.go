@@ -31,7 +31,7 @@ type filterCondition struct {
 // reservedQueryParams are handled separately by the caller and never
 // treated as data filters.
 var reservedQueryParams = map[string]bool{
-	"limit": true, "offset": true, "q": true, "rerank": true,
+	"limit": true, "offset": true, "q": true, "rerank": true, "sort": true,
 }
 
 // parseFilters turns query params other than the reserved ones into
@@ -100,4 +100,42 @@ func filterWhereSQL(conds []filterCondition) (string, []any) {
 		args = append(args, "$."+c.field, c.value)
 	}
 	return strings.Join(parts, " AND "), args
+}
+
+// sortSpec is a request to order results by a top-level field of data
+// instead of the caller's default (id for list, distance for search).
+type sortSpec struct {
+	field string
+	desc  bool
+}
+
+// parseSort reads the "sort" query param: "campo" for ascending, "-campo"
+// for descending. Returns nil if absent — the caller's default ordering
+// applies.
+func parseSort(query url.Values) (*sortSpec, error) {
+	raw := query.Get("sort")
+	if raw == "" {
+		return nil, nil
+	}
+	field := raw
+	desc := false
+	if strings.HasPrefix(raw, "-") {
+		field = raw[1:]
+		desc = true
+	}
+	if !collectionNameRe.MatchString(field) {
+		return nil, fmt.Errorf("invalid sort field %q", field)
+	}
+	return &sortSpec{field: field, desc: desc}, nil
+}
+
+// orderBySQL renders "json_extract(data, ?) ASC|DESC" and its bind arg.
+// ASC/DESC is always one of these two literal strings from s.desc — never
+// user input — since SQL doesn't allow parameterizing sort direction.
+func (s *sortSpec) orderBySQL() (string, []any) {
+	dir := "ASC"
+	if s.desc {
+		dir = "DESC"
+	}
+	return fmt.Sprintf("json_extract(data, ?) %s", dir), []any{"$." + s.field}
 }
