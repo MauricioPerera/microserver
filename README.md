@@ -219,7 +219,7 @@ Autentica con las credenciales configuradas en `AUTH_USERNAME`/`AUTH_PASSWORD` y
 
 **Respuesta:** `200 OK`
 ```json
-{"token": "YWRtaW46MTc4NTU5NzczMQ.IhLpWuv26VvEe1h1t-iu8js0SbERWXND5yKVO83H4xA", "expires_in": 3600}
+{"token": "<base64-payload>.<base64-hmac-signature>", "expires_in": 3600}
 ```
 
 **Errores:** `401` si el usuario o contraseña son incorrectos. `400` si el JSON es inválido.
