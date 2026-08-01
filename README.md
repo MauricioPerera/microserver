@@ -11,6 +11,8 @@
 
 Servidor HTTP en Go que expone búsqueda semántica sobre SQLite (`sqlite-vec`), usando `embeddinggemma` vía Ollama para generar los embeddings.
 
+Ver [CHANGELOG.md](CHANGELOG.md) para el historial de cambios.
+
 ## Requisitos
 
 - Go 1.26+, con cgo habilitado (gcc/mingw en Windows).
@@ -216,7 +218,32 @@ Antes de reemplazar el binario o la máquina, copiar `vec.db` y `backups/` — s
 
 Todas las respuestas son JSON. Los cuerpos de request van sin encabezado `Content-Type` estricto (curl con `-d` funciona tal cual).
 
-`GET /health` y `POST /login` son públicos. Todo lo demás (`/items*`, `/search`) requiere el header `Authorization: Bearer <token>` obtenido de `/login`.
+`GET /health` y `POST /login` son públicos. Todo lo demás requiere el header `Authorization: Bearer <token>` obtenido de `/login`.
+
+### Referencia rápida
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/health` | Chequeo de salud. Público. |
+| POST | `/login` | Login, devuelve token. Público. |
+| POST | `/items` | Insertar en la tabla fija `vec_items`. |
+| GET | `/items` | Listar items de `vec_items`. |
+| PUT | `/items/{id}` | Reemplazar un item de `vec_items`. |
+| DELETE | `/items/{id}` | Borrar un item de `vec_items`. |
+| GET | `/search` | Búsqueda semántica en `vec_items`. |
+| POST | `/collections` | Crear una colección (con o sin vector, con referencias opcionales). |
+| GET | `/collections` | Listar colecciones. |
+| DELETE | `/collections/{name}` | Borrar una colección entera. |
+| POST | `/collections/{name}/items` | Insertar un item en una colección. |
+| GET | `/collections/{name}/items` | Listar items — con filtro y orden opcionales. |
+| GET | `/collections/{name}/items/{id}` | Traer un item por id. |
+| PUT | `/collections/{name}/items/{id}` | Reemplazar un item. |
+| DELETE | `/collections/{name}/items/{id}` | Borrar un item (respeta referencias `restrict`/`set_null`). |
+| GET | `/collections/{name}/search` | Búsqueda semántica (solo colecciones con vector) — filtro y orden opcionales. |
+| GET | `/collections/{name}/fulltext` | Búsqueda de texto completo FTS5 sobre `text` (solo colecciones con vector). |
+| GET | `/collections/{name}/aggregate` | `count`/`sum`/`avg`/`min`/`max`, con `group_by` y filtro opcionales. |
+
+Detalle completo de cada uno abajo.
 
 ### `GET /health`
 
