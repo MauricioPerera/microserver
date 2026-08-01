@@ -340,22 +340,38 @@ Cada colección es o bien:
 - **Sin vector**: solo `id` + un campo `data` con cualquier JSON que quieras (objetos anidados, arrays, lo que sea) — un almacén de documentos simple, sin búsqueda semántica.
 - **Con vector**: además de `data`, tiene `text` (lo que se embebe y se busca) + los mismos dos vectores (float32 + binario) que `vec_items`. Mismo trade-off `rerank` que `/search`.
 
+Las colecciones pueden **referenciarse entre sí** (ver `references` en `POST /collections` abajo) — un campo de `data` puede apuntar al id de un item en otra colección, validado en cada insert/update, con `restrict` o `set_null` al borrar el item referenciado.
+
+**Lo que esto NO es**, para no generar expectativas de más: no hay joins (`GET /collections/{name}/items/{id}` es el único lookup puntual — resolver una referencia son N llamadas, una por cada id), no hay filtrado por campos de `data` (solo paginar todo o buscar por vector), y no hay transacciones atómicas entre colecciones. Para casos como un CMS con "publicaciones de este autor, ordenadas por fecha" hace falta un lenguaje de consulta que hoy no existe.
+
 Todos requieren auth.
 
 ### `POST /collections`
 
-Crea una colección. `dimensions` es obligatorio (1–8192) si `vector` es `true`.
+Crea una colección. `dimensions` es obligatorio (1–8192) si `vector` es `true`. `references` es opcional — declara campos de `data` que deben apuntar a un id existente en otra colección (la colección referenciada debe existir de antes).
 
 **Body:**
 ```json
-{"name": "documentos", "vector": true, "dimensions": 768}
+{
+  "name": "publicaciones",
+  "vector": false,
+  "references": {
+    "autor_id": {"collection": "autores", "on_delete": "restrict"},
+    "categoria_id": {"collection": "categorias", "on_delete": "set_null"}
+  }
+}
 ```
 
-**Respuesta:** `201 Created` con el objeto de la colección. `409` si ya existe. `400` si el nombre es inválido (debe matchear `^[a-zA-Z][a-zA-Z0-9_]{0,62}$` — sin espacios, guiones, puntos ni comillas) o si `dimensions` es inválido.
+`on_delete` (default `restrict` si se omite):
+- `restrict`: no deja borrar el item referenciado mientras exista al menos un item apuntándolo (`409`).
+- `set_null`: al borrar el item referenciado, pone ese campo en `null` en todos los items que lo referenciaban.
+
+**Respuesta:** `201 Created` con el objeto de la colección. `409` si ya existe. `400` si el nombre es inválido (debe matchear `^[a-zA-Z][a-zA-Z0-9_]{0,62}$`), si `dimensions` es inválido, si algún `references[].collection` no existe todavía, o si `on_delete` no es `restrict`/`set_null`.
 
 ```bash
-curl -X POST http://localhost:8080/collections -H "Authorization: Bearer $TOKEN" -d '{"name":"documentos","vector":true,"dimensions":768}'
-curl -X POST http://localhost:8080/collections -H "Authorization: Bearer $TOKEN" -d '{"name":"notas","vector":false}'
+curl -X POST http://localhost:8080/collections -H "Authorization: Bearer $TOKEN" -d '{"name":"autores","vector":false}'
+curl -X POST http://localhost:8080/collections -H "Authorization: Bearer $TOKEN" -d '{"name":"categorias","vector":false}'
+curl -X POST http://localhost:8080/collections -H "Authorization: Bearer $TOKEN" -d '{"name":"publicaciones","vector":false,"references":{"autor_id":{"collection":"autores","on_delete":"restrict"},"categoria_id":{"collection":"categorias","on_delete":"set_null"}}}'
 ```
 
 ### `GET /collections`
@@ -398,9 +414,19 @@ Lista items (`limit`/`offset`, igual que `GET /items`).
 curl "http://localhost:8080/collections/documentos/items?limit=10" -H "Authorization: Bearer $TOKEN"
 ```
 
+### `GET /collections/{name}/items/{id}`
+
+Trae un item por id — el único "lookup puntual" que existe (no hay joins: para resolver una referencia hay que llamar esto en la colección referenciada).
+
+**Respuesta:** `200 OK` con el item. `404` si no existe.
+
+```bash
+curl http://localhost:8080/collections/autores/items/1 -H "Authorization: Bearer $TOKEN"
+```
+
 ### `PUT /collections/{name}/items/{id}`
 
-Reemplaza `text`/`data` de un item. Mismo requisito de `text` que el insert.
+Reemplaza `text`/`data` de un item. Mismo requisito de `text` que el insert, y las referencias en `data` se validan igual que en el insert.
 
 ```bash
 curl -X PUT http://localhost:8080/collections/notas/items/1 -H "Authorization: Bearer $TOKEN" -d '{"data":{"titulo":"compras","done":true}}'
@@ -408,7 +434,7 @@ curl -X PUT http://localhost:8080/collections/notas/items/1 -H "Authorization: B
 
 ### `DELETE /collections/{name}/items/{id}`
 
-Borra un item. `204`/`404`.
+Borra un item. `204`/`404`. Si otras colecciones tienen items con referencia `restrict` apuntando a este, `409` (no borra nada). Con `set_null`, borra igual y pone `null` en el campo de cada item que lo referenciaba.
 
 ### `GET /collections/{name}/search`
 

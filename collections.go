@@ -19,6 +19,20 @@ const collectionsSchema = `CREATE TABLE IF NOT EXISTS collections (
 	created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`
 
+// A reference is declared when its owning collection is created: a named
+// top-level field in that collection's "data" JSON that must hold either
+// null or the id of an existing row in target_collection. field_name and
+// target_collection are never interpolated into SQL — they're always bound
+// as query parameters (json_extract's path argument is an ordinary bindable
+// string, so this needs no identifier whitelist the way table names do).
+const referencesSchema = `CREATE TABLE IF NOT EXISTS collection_references (
+	collection_name TEXT NOT NULL,
+	field_name TEXT NOT NULL,
+	target_collection TEXT NOT NULL,
+	on_delete TEXT NOT NULL,
+	PRIMARY KEY (collection_name, field_name)
+)`
+
 // collectionNameRe whitelists what a collection name may look like. This is
 // the entire injection defense for building CREATE/DROP TABLE statements:
 // SQLite has no way to bind an identifier as a query parameter, so any
@@ -33,7 +47,40 @@ var (
 	ErrCollectionNotFound    = errors.New("collection not found")
 	ErrCollectionNotVector   = errors.New("collection has no vectors")
 	ErrInvalidCollectionName = fmt.Errorf("collection name must match %s", collectionNameRe.String())
+	ErrDocumentNotFound      = errors.New("document not found")
 )
+
+// ReferenceSpec is a request to declare a reference field when creating a
+// collection.
+type ReferenceSpec struct {
+	Collection string `json:"collection"`
+	OnDelete   string `json:"on_delete,omitempty"` // "restrict" (default) or "set_null"
+}
+
+// Reference is a stored reference declaration, as returned to clients.
+type Reference struct {
+	Field      string `json:"field"`
+	Collection string `json:"collection"`
+	OnDelete   string `json:"on_delete"`
+}
+
+const (
+	onDeleteRestrict = "restrict"
+	onDeleteSetNull  = "set_null"
+)
+
+// ReferenceValidationError means a request's reference field was malformed
+// or pointed at something that doesn't exist — a client (400) problem.
+type ReferenceValidationError struct{ msg string }
+
+func (e *ReferenceValidationError) Error() string { return e.msg }
+
+// ReferentialConstraintError means a delete was refused because another
+// collection still has a restrict-mode reference pointing at the row — a
+// conflict (409), not a bad request.
+type ReferentialConstraintError struct{ msg string }
+
+func (e *ReferentialConstraintError) Error() string { return e.msg }
 
 // quoteIdent double-quotes a SQL identifier, escaping embedded quotes.
 // Defense in depth on top of collectionNameRe — table names built from a
@@ -55,12 +102,26 @@ type Collection struct {
 // the fixed vec_items table, plus a free-form "data" JSON column for
 // metadata unrelated to the embedding. Non-vector collections are a plain
 // table: just id + data.
-func createCollection(s *VecStore, name string, hasVector bool, dimensions int) error {
+//
+// references declares fields in this collection's data that must point at
+// an existing row in another (already-created) collection — the closest
+// thing to a foreign key this store has. Validated on every insert/update;
+// on_delete controls what happens to referencing rows when the referenced
+// row is deleted (see checkReferentialDelete).
+func createCollection(s *VecStore, name string, hasVector bool, dimensions int, references map[string]ReferenceSpec) error {
 	if !collectionNameRe.MatchString(name) {
 		return ErrInvalidCollectionName
 	}
 	if hasVector && (dimensions <= 0 || dimensions > maxDimensions) {
 		return fmt.Errorf("dimensions must be between 1 and %d when vector is true", maxDimensions)
+	}
+	for field, ref := range references {
+		if !collectionNameRe.MatchString(field) {
+			return fmt.Errorf("reference field name %q must match %s", field, collectionNameRe.String())
+		}
+		if ref.OnDelete != "" && ref.OnDelete != onDeleteRestrict && ref.OnDelete != onDeleteSetNull {
+			return fmt.Errorf("reference field %q: on_delete must be %q or %q", field, onDeleteRestrict, onDeleteSetNull)
+		}
 	}
 
 	tx, err := s.write.Begin()
@@ -75,6 +136,16 @@ func createCollection(s *VecStore, name string, hasVector bool, dimensions int) 
 	}
 	if exists > 0 {
 		return ErrCollectionExists
+	}
+
+	for _, ref := range references {
+		var targetExists int
+		if err := tx.QueryRow(`SELECT count(*) FROM collections WHERE name = ?`, ref.Collection).Scan(&targetExists); err != nil {
+			return fmt.Errorf("checking reference target %q: %w", ref.Collection, err)
+		}
+		if targetExists == 0 {
+			return fmt.Errorf("reference target collection %q does not exist (create it first)", ref.Collection)
+		}
 	}
 
 	tableName := "coll_" + name
@@ -110,7 +181,214 @@ func createCollection(s *VecStore, name string, hasVector bool, dimensions int) 
 		return fmt.Errorf("registering collection: %w", err)
 	}
 
+	for field, ref := range references {
+		onDelete := ref.OnDelete
+		if onDelete == "" {
+			onDelete = onDeleteRestrict
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO collection_references(collection_name, field_name, target_collection, on_delete) VALUES (?, ?, ?, ?)`,
+			name, field, ref.Collection, onDelete,
+		); err != nil {
+			return fmt.Errorf("registering reference %q: %w", field, err)
+		}
+	}
+
 	return tx.Commit()
+}
+
+// getReferences returns the reference fields declared on a collection.
+func getReferences(s *VecStore, collectionName string) ([]Reference, error) {
+	rows, err := s.read.Query(
+		`SELECT field_name, target_collection, on_delete FROM collection_references WHERE collection_name = ?`,
+		collectionName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("looking up references: %w", err)
+	}
+	defer rows.Close()
+
+	var refs []Reference
+	for rows.Next() {
+		var r Reference
+		if err := rows.Scan(&r.Field, &r.Collection, &r.OnDelete); err != nil {
+			return nil, fmt.Errorf("scanning reference: %w", err)
+		}
+		refs = append(refs, r)
+	}
+	return refs, rows.Err()
+}
+
+// referenceDependent is a reference declared by some other collection that
+// points at collectionName — i.e. rows there that might point at a row
+// about to be deleted here.
+type referenceDependent struct {
+	CollectionName string
+	Field          string
+	OnDelete       string
+}
+
+func getReferencesTargeting(s *VecStore, collectionName string) ([]referenceDependent, error) {
+	rows, err := s.read.Query(
+		`SELECT collection_name, field_name, on_delete FROM collection_references WHERE target_collection = ?`,
+		collectionName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("looking up dependent references: %w", err)
+	}
+	defer rows.Close()
+
+	var deps []referenceDependent
+	for rows.Next() {
+		var d referenceDependent
+		if err := rows.Scan(&d.CollectionName, &d.Field, &d.OnDelete); err != nil {
+			return nil, fmt.Errorf("scanning dependent reference: %w", err)
+		}
+		deps = append(deps, d)
+	}
+	return deps, rows.Err()
+}
+
+// validateReferences checks every reference field present (and non-null) in
+// data against its target collection, failing if the referenced id doesn't
+// exist there. Fields that are absent or null are treated as unset — no
+// "required reference" support yet.
+func validateReferences(s *VecStore, collectionName string, data json.RawMessage) error {
+	refs, err := getReferences(s, collectionName)
+	if err != nil {
+		return err
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+
+	var parsed map[string]json.RawMessage
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			return &ReferenceValidationError{fmt.Sprintf("data must be a JSON object to validate its reference fields: %v", err)}
+		}
+	}
+
+	for _, ref := range refs {
+		raw, present := parsed[ref.Field]
+		if !present || string(raw) == "null" {
+			continue
+		}
+		var refID int64
+		if err := json.Unmarshal(raw, &refID); err != nil {
+			return &ReferenceValidationError{fmt.Sprintf("field %q must be an integer id or null", ref.Field)}
+		}
+		target, err := getCollection(s, ref.Collection)
+		if err != nil {
+			return &ReferenceValidationError{fmt.Sprintf("reference target collection %q: %v", ref.Collection, err)}
+		}
+		var count int
+		table := quoteIdent(target.tableName)
+		if err := s.read.QueryRow(fmt.Sprintf(`SELECT count(*) FROM %s WHERE id = ?`, table), refID).Scan(&count); err != nil {
+			return fmt.Errorf("checking reference %q: %w", ref.Field, err)
+		}
+		if count == 0 {
+			return &ReferenceValidationError{fmt.Sprintf("field %q references id %d, which does not exist in collection %q", ref.Field, refID, ref.Collection)}
+		}
+	}
+	return nil
+}
+
+// checkReferentialDelete enforces on_delete behavior for every other
+// collection's reference field that points at collectionName, for the row
+// about to be deleted there. Called before the row is actually removed:
+//   - restrict: refuses the delete if any referencing row exists.
+//   - set_null: nulls the field out on every referencing row.
+func checkReferentialDelete(s *VecStore, collectionName string, id int64) error {
+	deps, err := getReferencesTargeting(s, collectionName)
+	if err != nil {
+		return err
+	}
+
+	for _, dep := range deps {
+		srcColl, err := getCollection(s, dep.CollectionName)
+		if err != nil {
+			if errors.Is(err, ErrCollectionNotFound) {
+				continue
+			}
+			return err
+		}
+		table := quoteIdent(srcColl.tableName)
+		rows, err := s.read.Query(fmt.Sprintf(`SELECT id FROM %s WHERE json_extract(data, ?) = ?`, table), "$."+dep.Field, id)
+		if err != nil {
+			return fmt.Errorf("checking references from %q: %w", dep.CollectionName, err)
+		}
+		var matching []int64
+		for rows.Next() {
+			var rid int64
+			if err := rows.Scan(&rid); err != nil {
+				rows.Close()
+				return fmt.Errorf("scanning referencing row: %w", err)
+			}
+			matching = append(matching, rid)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(matching) == 0 {
+			continue
+		}
+
+		switch dep.OnDelete {
+		case onDeleteRestrict:
+			return &ReferentialConstraintError{fmt.Sprintf("cannot delete: referenced by %d item(s) in collection %q (field %q)", len(matching), dep.CollectionName, dep.Field)}
+		case onDeleteSetNull:
+			for _, rid := range matching {
+				doc, err := getDocumentByID(s, srcColl, rid)
+				if err != nil {
+					return fmt.Errorf("loading referencing document %d: %w", rid, err)
+				}
+				var m map[string]json.RawMessage
+				if err := json.Unmarshal(dataOrEmptyBytes(doc.Data), &m); err != nil {
+					return fmt.Errorf("parsing referencing document %d: %w", rid, err)
+				}
+				m[dep.Field] = json.RawMessage("null")
+				newData, err := json.Marshal(m)
+				if err != nil {
+					return fmt.Errorf("re-encoding referencing document %d: %w", rid, err)
+				}
+				if _, err := updateDocument(s, srcColl, rid, doc.Text, newData); err != nil {
+					return fmt.Errorf("nulling reference on document %d: %w", rid, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func dataOrEmptyBytes(data json.RawMessage) []byte {
+	if len(data) == 0 {
+		return []byte("{}")
+	}
+	return data
+}
+
+// getDocumentByID fetches a single item by id. Returns ErrDocumentNotFound
+// if it doesn't exist.
+func getDocumentByID(s *VecStore, coll *Collection, id int64) (*Document, error) {
+	table := quoteIdent(coll.tableName)
+	var d Document
+	var data string
+	var err error
+	if coll.HasVector {
+		err = s.read.QueryRow(fmt.Sprintf(`SELECT id, text, data FROM %s WHERE id = ?`, table), id).Scan(&d.ID, &d.Text, &data)
+	} else {
+		err = s.read.QueryRow(fmt.Sprintf(`SELECT id, data FROM %s WHERE id = ?`, table), id).Scan(&d.ID, &data)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrDocumentNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("getting document: %w", err)
+	}
+	d.Data = json.RawMessage(data)
+	return &d, nil
 }
 
 // getCollection looks up a collection by name. Returns ErrCollectionNotFound
@@ -202,8 +480,12 @@ func dataOrEmpty(data json.RawMessage) string {
 
 // insertDocument adds an item to a collection. text is required and gets
 // embedded if the collection has vectors; ignored otherwise. id nil means
-// let SQLite assign one.
+// let SQLite assign one. Any reference fields declared on this collection
+// are validated against their target collections before the write.
 func insertDocument(s *VecStore, coll *Collection, id *int64, text string, data json.RawMessage) (int64, error) {
+	if err := validateReferences(s, coll.Name, data); err != nil {
+		return 0, err
+	}
 	table := quoteIdent(coll.tableName)
 	dataStr := dataOrEmpty(data)
 
@@ -251,8 +533,12 @@ func insertDocument(s *VecStore, coll *Collection, id *int64, text string, data 
 // updateDocument replaces an existing item's text/data. For vector
 // collections this is delete+insert in a transaction, same workaround as
 // updateText on the fixed table — vec0's UPDATE path doesn't handle typed
-// vector blobs correctly. Returns false if no row had that id.
+// vector blobs correctly. Returns false if no row had that id. Reference
+// fields are validated the same way as on insert.
 func updateDocument(s *VecStore, coll *Collection, id int64, text string, data json.RawMessage) (bool, error) {
+	if err := validateReferences(s, coll.Name, data); err != nil {
+		return false, err
+	}
 	table := quoteIdent(coll.tableName)
 	dataStr := dataOrEmpty(data)
 
@@ -308,8 +594,13 @@ func updateDocument(s *VecStore, coll *Collection, id int64, text string, data j
 	return true, nil
 }
 
-// deleteDocument removes an item by id. Returns false if no row had that id.
+// deleteDocument removes an item by id. Returns false if no row had that
+// id. Before deleting, enforces on_delete for any other collection's
+// reference field pointing at this row (see checkReferentialDelete).
 func deleteDocument(s *VecStore, coll *Collection, id int64) (bool, error) {
+	if err := checkReferentialDelete(s, coll.Name, id); err != nil {
+		return false, err
+	}
 	table := quoteIdent(coll.tableName)
 	res, err := s.write.Exec(fmt.Sprintf(`DELETE FROM %s WHERE id = ?`, table), id)
 	if err != nil {

@@ -8,13 +8,16 @@ import (
 )
 
 type createCollectionRequest struct {
-	Name       string `json:"name"`
-	Vector     bool   `json:"vector"`
-	Dimensions int    `json:"dimensions"`
+	Name       string                   `json:"name"`
+	Vector     bool                     `json:"vector"`
+	Dimensions int                      `json:"dimensions"`
+	References map[string]ReferenceSpec `json:"references,omitempty"`
 }
 
-// handleCreateCollection: POST /collections {"name":"...", "vector":bool, "dimensions":N}
-// dimensions is required (and must be 1..8192) when vector is true.
+// handleCreateCollection: POST /collections
+// {"name":"...", "vector":bool, "dimensions":N, "references":{"field":{"collection":"...","on_delete":"restrict|set_null"}}}
+// dimensions is required (and must be 1..8192) when vector is true. Every
+// referenced collection must already exist.
 func handleCreateCollection(store *VecStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req createCollectionRequest
@@ -27,15 +30,12 @@ func handleCreateCollection(store *VecStore) http.HandlerFunc {
 			return
 		}
 
-		if err := createCollection(store, req.Name, req.Vector, req.Dimensions); err != nil {
-			switch {
-			case errors.Is(err, ErrCollectionExists):
+		if err := createCollection(store, req.Name, req.Vector, req.Dimensions, req.References); err != nil {
+			if errors.Is(err, ErrCollectionExists) {
 				writeError(w, http.StatusConflict, err.Error())
-			case errors.Is(err, ErrInvalidCollectionName):
-				writeError(w, http.StatusBadRequest, err.Error())
-			default:
-				writeError(w, http.StatusBadRequest, err.Error())
+				return
 			}
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusCreated, Collection{Name: req.Name, HasVector: req.Vector, Dimensions: req.Dimensions})
@@ -102,10 +102,42 @@ func handleInsertDocument(store *VecStore) http.HandlerFunc {
 
 		id, err := insertDocument(store, coll, req.ID, req.Text, req.Data)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeDocumentError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, insertResponse{ID: id})
+	}
+}
+
+// handleGetDocument: GET /collections/{name}/items/{id}
+func handleGetDocument(store *VecStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		coll, err := getCollection(store, r.PathValue("name"))
+		if err != nil {
+			if errors.Is(err, ErrCollectionNotFound) {
+				writeError(w, http.StatusNotFound, "collection not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "id must be an integer")
+			return
+		}
+
+		doc, err := getDocumentByID(store, coll, id)
+		if err != nil {
+			if errors.Is(err, ErrDocumentNotFound) {
+				writeError(w, http.StatusNotFound, "item not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, doc)
 	}
 }
 
@@ -167,7 +199,7 @@ func handleUpdateDocument(store *VecStore) http.HandlerFunc {
 
 		found, err := updateDocument(store, coll, id, req.Text, req.Data)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeDocumentError(w, err)
 			return
 		}
 		if !found {
@@ -199,7 +231,7 @@ func handleDeleteDocument(store *VecStore) http.HandlerFunc {
 
 		found, err := deleteDocument(store, coll, id)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeDocumentError(w, err)
 			return
 		}
 		if !found {
@@ -260,6 +292,23 @@ func handleSearchDocuments(store *VecStore) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, docs)
 	}
+}
+
+// writeDocumentError maps the errors that insert/update/delete can return
+// to the right HTTP status: bad reference input is a 400, a blocked delete
+// (restrict) is a 409, everything else is a 500.
+func writeDocumentError(w http.ResponseWriter, err error) {
+	var valErr *ReferenceValidationError
+	if errors.As(err, &valErr) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var constraintErr *ReferentialConstraintError
+	if errors.As(err, &constraintErr) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
 }
 
 func parseLimitOffset(w http.ResponseWriter, r *http.Request) (limit, offset int, ok bool) {

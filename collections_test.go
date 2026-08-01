@@ -12,11 +12,11 @@ func TestCreateAndDropCollection(t *testing.T) {
 	}
 	defer s.Close()
 
-	if err := createCollection(s, "notas", false, 0); err != nil {
+	if err := createCollection(s, "notas", false, 0, nil); err != nil {
 		t.Fatalf("createCollection: %v", err)
 	}
 
-	if err := createCollection(s, "notas", false, 0); err == nil {
+	if err := createCollection(s, "notas", false, 0, nil); err == nil {
 		t.Fatal("expected error creating duplicate collection")
 	} else if err != ErrCollectionExists {
 		t.Fatalf("expected ErrCollectionExists, got %v", err)
@@ -54,7 +54,7 @@ func TestCollectionNameValidation(t *testing.T) {
 		"has.dot",
 	}
 	for _, name := range bad {
-		if err := createCollection(s, name, false, 0); err != ErrInvalidCollectionName {
+		if err := createCollection(s, name, false, 0, nil); err != ErrInvalidCollectionName {
 			t.Errorf("name %q: expected ErrInvalidCollectionName, got %v", name, err)
 		}
 	}
@@ -76,10 +76,10 @@ func TestVectorCollectionRequiresValidDimensions(t *testing.T) {
 	}
 	defer s.Close()
 
-	if err := createCollection(s, "vecs", true, 0); err == nil {
+	if err := createCollection(s, "vecs", true, 0, nil); err == nil {
 		t.Fatal("expected error for dimensions=0 with vector=true")
 	}
-	if err := createCollection(s, "vecs", true, 100000); err == nil {
+	if err := createCollection(s, "vecs", true, 100000, nil); err == nil {
 		t.Fatal("expected error for dimensions over the max")
 	}
 }
@@ -91,7 +91,7 @@ func TestNonVectorCollectionDocuments(t *testing.T) {
 	}
 	defer s.Close()
 
-	if err := createCollection(s, "notas", false, 0); err != nil {
+	if err := createCollection(s, "notas", false, 0, nil); err != nil {
 		t.Fatalf("createCollection: %v", err)
 	}
 	coll, err := getCollection(s, "notas")
@@ -151,7 +151,7 @@ func TestVectorCollectionSearchAndTextRequired(t *testing.T) {
 	}
 	defer s.Close()
 
-	if err := createCollection(s, "docs", true, 768); err != nil {
+	if err := createCollection(s, "docs", true, 768, nil); err != nil {
 		t.Fatalf("createCollection: %v", err)
 	}
 	coll, err := getCollection(s, "docs")
@@ -190,7 +190,7 @@ func TestVectorCollectionSearchAndTextRequired(t *testing.T) {
 	}
 
 	// non-vector collection: search must be rejected, not silently empty
-	if err := createCollection(s, "notas", false, 0); err != nil {
+	if err := createCollection(s, "notas", false, 0, nil); err != nil {
 		t.Fatalf("createCollection: %v", err)
 	}
 	plain, _ := getCollection(s, "notas")
