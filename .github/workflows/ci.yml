@@ -45,18 +45,48 @@ jobs:
       - name: Test with coverage
         run: go test -coverprofile=coverage.out ./...
 
-      # Self-hosted badge: no Codecov/Coveralls account needed. Computes
-      # coverage % here and publishes a shields.io "endpoint badge" JSON
-      # file to an orphan `badges` branch using the default GITHUB_TOKEN,
-      # which shields.io then renders live via /endpoint.
-      - name: Publish coverage badge
-        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+      # Both badge computations happen here, while the repo is still checked
+      # out on master. Writing the results to /tmp keeps them safe from the
+      # branch switch in the final publish step below.
+      - name: Compute coverage badge data
         run: |
           PCT=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
           COLOR=$(awk -v pct="$PCT" 'BEGIN { if (pct>=80) print "brightgreen"; else if (pct>=60) print "yellow"; else print "red" }')
           printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' "$PCT" "$COLOR" > /tmp/coverage.json
           cat /tmp/coverage.json
 
+      # Deterministic check against the GitHub API's license detection for
+      # each direct dependency in go.mod (not a heuristic scan of vendored
+      # LICENSE files, which are incomplete for at least one dependency
+      # here). Allowlist covers common permissive licenses.
+      - name: Check dependency licenses
+        run: |
+          ALLOWED="MIT Apache-2.0 BSD-3-Clause BSD-2-Clause ISC"
+          FAIL=0
+          COUNT=0
+          for mod in $(awk '/^require \(/,/^\)/' go.mod | grep github.com | awk '{print $1}'); do
+            repo=$(echo "$mod" | sed -E 's#^github\.com/##')
+            lic=$(curl -s "https://api.github.com/repos/$repo" | jq -r '.license.spdx_id // "NOASSERTION"')
+            echo "$mod -> $lic"
+            COUNT=$((COUNT+1))
+            case " $ALLOWED " in
+              *" $lic "*) ;;
+              *) FAIL=1 ;;
+            esac
+          done
+          if [ "$FAIL" -eq 0 ]; then
+            printf '{"schemaVersion":1,"label":"dependency licenses","message":"%s ok","color":"brightgreen"}\n' "$COUNT" > /tmp/deps-license.json
+          else
+            printf '{"schemaVersion":1,"label":"dependency licenses","message":"issue found","color":"red"}\n' > /tmp/deps-license.json
+          fi
+          cat /tmp/deps-license.json
+
+      # Self-hosted badges: no Codecov/FOSSA/etc account needed. Publishes
+      # the JSON computed above to an orphan `badges` branch using the
+      # default GITHUB_TOKEN; shields.io renders each live via /endpoint.
+      - name: Publish badges
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        run: |
           git config user.email "actions@github.com"
           git config user.name "github-actions"
 
@@ -68,5 +98,6 @@ jobs:
           fi
 
           cp /tmp/coverage.json coverage.json
-          git add coverage.json
-          git diff --staged --quiet || (git commit -m "Update coverage badge" && git push origin badges)
+          cp /tmp/deps-license.json deps-license.json
+          git add coverage.json deps-license.json
+          git diff --staged --quiet || (git commit -m "Update badges" && git push origin badges)
