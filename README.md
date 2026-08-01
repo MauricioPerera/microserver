@@ -6,6 +6,7 @@
 [![Go version](https://img.shields.io/github/go-mod/go-version/MauricioPerera/microserver)](go.mod)
 [![Dependency licenses](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FMauricioPerera%2Fmicroserver%2Fbadges%2Fdeps-license.json)](go.mod)
 [![Release](https://img.shields.io/github/v/release/MauricioPerera/microserver)](https://github.com/MauricioPerera/microserver/releases)
+[![Binary size](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FMauricioPerera%2Fmicroserver%2Fbadges%2Fbinary-size.json)](https://github.com/MauricioPerera/microserver/actions/workflows/ci.yml)
 
 Servidor HTTP en Go que expone búsqueda semántica sobre SQLite (`sqlite-vec`), usando `embeddinggemma` vía Ollama para generar los embeddings.
 

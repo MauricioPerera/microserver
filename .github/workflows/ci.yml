@@ -40,7 +40,7 @@ jobs:
         run: go vet ./...
 
       - name: Build
-        run: go build ./...
+        run: go build -o microserver .
 
       - name: Test with coverage
         run: go test -coverprofile=coverage.out ./...
@@ -54,6 +54,16 @@ jobs:
           COLOR=$(awk -v pct="$PCT" 'BEGIN { if (pct>=80) print "brightgreen"; else if (pct>=60) print "yellow"; else print "red" }')
           printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' "$PCT" "$COLOR" > /tmp/coverage.json
           cat /tmp/coverage.json
+
+      # Size of the linux/amd64 binary this CI just built. Not necessarily
+      # what you get building locally on another OS/arch — cgo binaries
+      # vary in size with the platform's libc.
+      - name: Compute binary size badge data
+        run: |
+          BYTES=$(stat -c%s microserver)
+          MB=$(awk -v b="$BYTES" 'BEGIN { printf "%.1f", b/1024/1024 }')
+          printf '{"schemaVersion":1,"label":"binary size (linux\\/amd64)","message":"%s MB","color":"blue"}\n' "$MB" > /tmp/binary-size.json
+          cat /tmp/binary-size.json
 
       # Deterministic check against the GitHub API's license detection for
       # each direct dependency in go.mod (not a heuristic scan of vendored
@@ -99,5 +109,6 @@ jobs:
 
           cp /tmp/coverage.json coverage.json
           cp /tmp/deps-license.json deps-license.json
-          git add coverage.json deps-license.json
+          cp /tmp/binary-size.json binary-size.json
+          git add coverage.json deps-license.json binary-size.json
           git diff --staged --quiet || (git commit -m "Update badges" && git push origin badges)
