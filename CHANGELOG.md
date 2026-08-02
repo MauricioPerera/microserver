@@ -7,6 +7,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Todo esto está en `master`, sin cortar como release todavía.
 
 ### Added
+- `PUT /users/me/password` — cualquier usuario autenticado cambia su propia contraseña (requiere la actual). No hay endpoint admin para resetear la contraseña de otro; solo borrar y recrear el usuario.
 - Multi-usuario con roles: tabla de usuarios (bcrypt), `admin` vs `read-only` parejo en toda la API. `POST/GET/DELETE /users` (admin-only), protección contra borrar el último admin. `AUTH_USERNAME`/`AUTH_PASSWORD` pasan a ser solo bootstrap del primer admin (una sola vez, tabla vacía), no la credencial permanente. Primera dependencia externa del proyecto (`golang.org/x/crypto/bcrypt`) — deliberada, hashear contraseñas a mano no es razonable.
 - Métricas Prometheus (`GET /metrics`, formato de texto hecho a mano) y logging estructurado (`log/slog`, JSON) reemplazando todo `log.Printf`.
 - Rate limiting por IP (general + uno más estricto en `/login`) y límite de tamaño de body (1 MiB, `413` si se excede).

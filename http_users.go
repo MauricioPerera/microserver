@@ -44,6 +44,43 @@ func handleListUsers(store *VecStore) http.HandlerFunc {
 	}
 }
 
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+// handleChangePassword: PUT /users/me/password. Any authenticated user, not
+// just admins — identifies the target user from the token (r.Context()),
+// never from a path parameter, so there's no way to change someone else's
+// password through this endpoint.
+func handleChangePassword(store *VecStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ac, ok := r.Context().Value(authContextKey).(authContext)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "missing bearer token")
+			return
+		}
+
+		var req changePasswordRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+
+		if err := changePassword(store, ac.Username, req.CurrentPassword, req.NewPassword); err != nil {
+			switch {
+			case errors.Is(err, ErrWrongPassword):
+				writeError(w, http.StatusUnauthorized, err.Error())
+			case errors.Is(err, ErrPasswordTooShort):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // handleDeleteUser: DELETE /users/{username}. Admin-only. Refuses to
 // remove the last admin (409) — there's no recovery path if that happens.
 func handleDeleteUser(store *VecStore) http.HandlerFunc {

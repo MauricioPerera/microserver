@@ -122,6 +122,63 @@ func TestHTTPUserManagementAndRoles(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestHTTPChangeOwnPassword(t *testing.T) {
+	store, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer store.Close()
+	seedTestAdmin(t, store)
+
+	server := httptest.NewServer(newRouter(store, testAuth()))
+	defer server.Close()
+
+	// wrong current password -> 401
+	body, _ := json.Marshal(changePasswordRequest{CurrentPassword: "wrongpw", NewPassword: "brandnewpw1"})
+	resp := doAuthed(t, http.MethodPut, server.URL+"/users/me/password", body)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong current password, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// new password too short -> 400
+	body, _ = json.Marshal(changePasswordRequest{CurrentPassword: "s3cretpw", NewPassword: "short"})
+	resp = doAuthed(t, http.MethodPut, server.URL+"/users/me/password", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for too-short new password, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// correct current password -> 204, and login with the new password works
+	body, _ = json.Marshal(changePasswordRequest{CurrentPassword: "s3cretpw", NewPassword: "brandnewpw1"})
+	resp = doAuthed(t, http.MethodPut, server.URL+"/users/me/password", body)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	loginBody, _ := json.Marshal(loginRequest{Username: "admin", Password: "brandnewpw1"})
+	resp, err = http.Post(server.URL+"/login", "application/json", bytes.NewReader(loginBody))
+	if err != nil {
+		t.Fatalf("POST /login with new password: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected login with new password to succeed, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// old password no longer works
+	loginBody, _ = json.Marshal(loginRequest{Username: "admin", Password: "s3cretpw"})
+	resp, err = http.Post(server.URL+"/login", "application/json", bytes.NewReader(loginBody))
+	if err != nil {
+		t.Fatalf("POST /login with old password: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected old password to be rejected, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
 func TestHTTPCreateUserValidationErrors(t *testing.T) {
 	store, err := openVecDB(":memory:")
 	if err != nil {

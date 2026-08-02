@@ -232,6 +232,7 @@ Todas las respuestas son JSON. Los cuerpos de request van sin encabezado `Conten
 | POST | `/users` | admin | Crear usuario. |
 | GET | `/users` | admin | Listar usuarios (sin hash). |
 | DELETE | `/users/{username}` | admin | Borrar usuario (protege al último admin). |
+| PUT | `/users/me/password` | cualquiera | Cambiar la propia contraseña. |
 | POST | `/items` | admin | Insertar en la tabla fija `vec_items`. |
 | GET | `/items` | cualquiera | Listar items de `vec_items`. |
 | PUT | `/items/{id}` | admin | Reemplazar un item de `vec_items`. |
@@ -323,6 +324,21 @@ Borra un usuario. `204`/`404`. Rechaza borrar el último admin que queda (`409`)
 
 ```bash
 curl -X DELETE http://localhost:8080/users/lector -H "Authorization: Bearer $TOKEN"
+```
+
+### `PUT /users/me/password` — cualquier usuario autenticado
+
+Cambia la propia contraseña (no la de otro — el usuario objetivo sale del token, no de la URL). Requiere la contraseña actual.
+
+**Body:**
+```json
+{"current_password": "unabuenacontrasena", "new_password": "otracontrasenamejor"}
+```
+
+**Respuesta:** `204 No Content`. `401` si `current_password` no coincide, `400` si `new_password` tiene menos de 8 caracteres. Los tokens ya emitidos con la contraseña vieja siguen válidos hasta que expiran (el token no incluye la contraseña, así que no hay nada que invalidar).
+
+```bash
+curl -X PUT http://localhost:8080/users/me/password -H "Authorization: Bearer $TOKEN" -d '{"current_password":"unabuenacontrasena","new_password":"otracontrasenamejor"}'
 ```
 
 ### `POST /items` — requiere rol admin

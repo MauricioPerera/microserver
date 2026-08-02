@@ -168,6 +168,39 @@ func TestEnsureBootstrapAdminFailsWithoutCredentialsOnEmptyTable(t *testing.T) {
 	}
 }
 
+func TestChangePassword(t *testing.T) {
+	s, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer s.Close()
+
+	if err := createUser(s, "alice", "originalpw", RoleReadOnly); err != nil {
+		t.Fatalf("createUser: %v", err)
+	}
+
+	if err := changePassword(s, "alice", "wrongpw", "newpassword1"); err != ErrWrongPassword {
+		t.Fatalf("expected ErrWrongPassword, got %v", err)
+	}
+	if err := changePassword(s, "alice", "originalpw", "short"); err != ErrPasswordTooShort {
+		t.Fatalf("expected ErrPasswordTooShort, got %v", err)
+	}
+	if err := changePassword(s, "alice", "originalpw", "newpassword1"); err != nil {
+		t.Fatalf("changePassword: %v", err)
+	}
+
+	u, err := getUser(s, "alice")
+	if err != nil {
+		t.Fatalf("getUser: %v", err)
+	}
+	if checkPassword(u, "originalpw") {
+		t.Fatal("old password should no longer work")
+	}
+	if !checkPassword(u, "newpassword1") {
+		t.Fatal("new password should work")
+	}
+}
+
 func TestListUsersExcludesPasswordHash(t *testing.T) {
 	s, err := openVecDB(":memory:")
 	if err != nil {

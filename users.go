@@ -30,6 +30,7 @@ var (
 	ErrInvalidUsername  = fmt.Errorf("username must match %s", collectionNameRe.String())
 	ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", minPasswordLength)
 	ErrLastAdmin        = errors.New("cannot remove the last admin user")
+	ErrWrongPassword    = errors.New("current password is incorrect")
 )
 
 // User is a row from the users table, including the password hash — never
@@ -165,6 +166,36 @@ func deleteUser(s *VecStore, username string) (bool, error) {
 		return false, fmt.Errorf("checking rows affected: %w", err)
 	}
 	return n > 0, nil
+}
+
+// changePassword verifies currentPassword against the stored hash and, if
+// it matches, replaces it with a bcrypt hash of newPassword. This is the
+// only self-service credential path — admins can create/delete users but
+// there's no admin "reset someone else's password" endpoint, so a user
+// locked out of their own password needs an admin to delete and recreate
+// their account.
+func changePassword(s *VecStore, username, currentPassword, newPassword string) error {
+	u, err := getUser(s, username)
+	if err != nil {
+		return err
+	}
+	if !checkPassword(u, currentPassword) {
+		return ErrWrongPassword
+	}
+	if len(newPassword) < minPasswordLength {
+		return ErrPasswordTooShort
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hashing password: %w", err)
+	}
+	if _, err := s.write.Exec(
+		`UPDATE users SET password_hash = ? WHERE username = ?`, string(hash), username,
+	); err != nil {
+		return fmt.Errorf("updating password: %w", err)
+	}
+	return nil
 }
 
 // countUsers reports how many users exist, for bootstrap decisions.
