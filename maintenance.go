@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,7 +33,7 @@ func (s *VecStore) StartCheckpointLoop(interval time.Duration, stop <-chan struc
 			select {
 			case <-ticker.C:
 				if err := s.Checkpoint(); err != nil {
-					log.Printf("wal checkpoint failed: %v", err)
+					slog.Error("wal checkpoint failed", "error", err)
 				}
 			case <-stop:
 				return
@@ -100,7 +100,7 @@ func (s *VecStore) StartBackupLoop(dir string, interval time.Duration, keep int,
 			select {
 			case <-ticker.C:
 				if _, err := BackupRotate(s, dir, keep); err != nil {
-					log.Printf("backup failed: %v", err)
+					slog.Error("backup failed", "error", err)
 				}
 			case <-stop:
 				return

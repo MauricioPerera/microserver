@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,9 +28,12 @@ const (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	auth, err := loadAuthConfig()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("loading auth config", "error", err)
+		os.Exit(1)
 	}
 
 	// Bound to loopback by default: this process is meant to sit behind a
@@ -44,44 +47,61 @@ func main() {
 
 	db, err := openVecDB("vec.db")
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("opening database", "error", err)
+		os.Exit(1)
 	}
 	defer db.Close()
 
 	stop := make(chan struct{})
 	db.StartCheckpointLoop(checkpointInterval, stop)
 	db.StartBackupLoop(backupDir, backupInterval, backupKeep, stop)
-	log.Printf("maintenance running: checkpoint every %s, backup every %s to %q (keep %d)\n",
-		checkpointInterval, backupInterval, backupDir, backupKeep)
+	slog.Info("maintenance running",
+		"checkpoint_interval", checkpointInterval.String(),
+		"backup_interval", backupInterval.String(),
+		"backup_dir", backupDir,
+		"backup_keep", backupKeep,
+	)
 
 	generalLimiter := newRateLimiter(generalRateLimitPerSecond, generalRateLimitBurst)
 	generalLimiter.startPruneLoop(rateLimiterPruneInterval, stop)
-	handler := limitBodySize(maxRequestBodyBytes, rateLimitMiddleware(generalLimiter, newRouter(db, auth)))
+
+	metrics := newMetricsCollector()
+
+	// /metrics lives outside the rate limit / body size chain — a scrape
+	// interval shouldn't risk tripping the general limiter, and a GET has
+	// no body to cap anyway. metricsMiddleware wraps everything, including
+	// /metrics itself and /health, so a scrape of /metrics also shows up
+	// in its own counters (ordinary self-monitoring, not a bug).
+	outerMux := http.NewServeMux()
+	outerMux.Handle("GET /metrics", handleMetrics(metrics))
+	outerMux.Handle("/", limitBodySize(maxRequestBodyBytes, rateLimitMiddleware(generalLimiter, newRouter(db, auth))))
+	handler := metricsMiddleware(metrics, outerMux)
 
 	srv := &http.Server{Addr: httpAddr, Handler: handler}
 	go func() {
-		log.Printf("listening on %s\n", httpAddr)
+		slog.Info("listening", "addr", httpAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server: %v", err)
+			slog.Error("http server", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	log.Println("shutting down: final checkpoint and backup")
+	slog.Info("shutting down", "reason", "signal received")
 	close(stop)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("http shutdown: %v", err)
+		slog.Error("http shutdown", "error", err)
 	}
 
 	if err := db.Checkpoint(); err != nil {
-		log.Printf("final checkpoint failed: %v", err)
+		slog.Error("final checkpoint failed", "error", err)
 	}
 	if _, err := BackupRotate(db, backupDir, backupKeep); err != nil {
-		log.Printf("final backup failed: %v", err)
+		slog.Error("final backup failed", "error", err)
 	}
 }

@@ -225,6 +225,7 @@ Todas las respuestas son JSON. Los cuerpos de request van sin encabezado `Conten
 | Método | Ruta | Descripción |
 |---|---|---|
 | GET | `/health` | Chequeo de salud. Público. |
+| GET | `/metrics` | Métricas Prometheus. Público. |
 | POST | `/login` | Login, devuelve token. Público. |
 | POST | `/items` | Insertar en la tabla fija `vec_items`. |
 | GET | `/items` | Listar items de `vec_items`. |
@@ -546,6 +547,28 @@ curl "http://localhost:8080/collections/productos/aggregate?op=sum&field=precio&
 - **Rate limit de `/login`**: más estricto, 5 intentos/minuto por IP (ráfaga de 5) — no hay bloqueo de cuenta de otra forma, así que esto es lo único que frena fuerza bruta sobre la contraseña.
 
 **La IP que ve el rate limiter es la que llega por TCP a este proceso** — si corre detrás de Caddy (ver TLS arriba) sin configurar `X-Forwarded-For`, esa IP es siempre la del proxy, no la del visitante real. En ese despliegue el límite pasa a ser efectivamente global (protege el proceso/Ollama de saturarse), no por-cliente. No se confía en `X-Forwarded-For` por defecto — un cliente directo podría falsificarlo para eludir su propio límite.
+
+## Observabilidad
+
+### Logs
+
+Estructurados en JSON (`log/slog`, stdlib — sin dependencia nueva) a stdout. Cada request termina con una línea `msg=request`: `method`, `path` (el patrón de ruta, ej. `/collections/{name}/items/{id}` — no la URL cruda con ids reales), `status`, `duration_ms`. Los errores (`status >= 400`) van a nivel `INFO`; los éxitos a nivel `DEBUG`, invisibles con el nivel por defecto — para ver tráfico exitoso hay que subir el nivel del handler en [main.go](main.go).
+
+### `GET /metrics`
+
+Métricas en formato de exposición de Prometheus (texto plano, sin la librería `client_golang` — se genera a mano, es el único consumidor que necesita este proyecto hoy). Público, sin auth, igual que `/health` — si te preocupa exponer conteos/latencias por ruta, restringilo a nivel de red o del reverse proxy, no acá.
+
+```bash
+curl http://localhost:8080/metrics
+```
+
+```
+http_requests_total{method="GET",path="/items",status="200"} 2
+http_request_duration_seconds_sum{method="POST",path="/items"} 0.338776
+http_request_duration_seconds_count{method="POST",path="/items"} 1
+```
+
+Etiquetado por **patrón de ruta**, no por URL cruda — `GET /collections/{name}/items/{id}` es una sola serie sin importar cuántas colecciones o ids distintos se pidan. Etiquetar por URL cruda haría explotar la cardinalidad de métricas con una serie nueva por cada combinación única de colección+id jamás solicitada.
 
 ## Notas de arquitectura
 
