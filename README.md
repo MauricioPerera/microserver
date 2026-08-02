@@ -17,7 +17,7 @@ Ver [CHANGELOG.md](CHANGELOG.md) para el historial de cambios.
 
 - Go 1.26+, con cgo habilitado (gcc/mingw en Windows).
 - [Ollama](https://ollama.com) corriendo en `localhost:11434` con el modelo `embeddinggemma` descargado.
-- Variables de entorno `AUTH_USERNAME` y `AUTH_PASSWORD` — el servidor no arranca sin ambas.
+- Variables de entorno `AUTH_USERNAME` y `AUTH_PASSWORD` — **solo la primera vez** que corre contra una base de datos nueva (tabla de usuarios vacía): siembran el admin inicial. En arranques posteriores se ignoran — los usuarios se gestionan vía `/users`. El servidor sí falla al arrancar si la tabla de usuarios está vacía y estas variables no están seteadas (no hay forma de loguearse si eso pasa).
 - **Build tag `sqlite_fts5` obligatorio** — sin él, SQLite no trae compilado el módulo FTS5 y **toda colección con vector falla al crearse** (no solo la búsqueda full-text), porque cada una crea automáticamente un índice FTS5 asociado. Ver sección Build.
 
 ### Instalar Ollama
@@ -61,13 +61,15 @@ ollama list
 AUTH_USERNAME=admin AUTH_PASSWORD=cambia-esto go run -tags sqlite_fts5 .
 ```
 
-`-tags sqlite_fts5` es obligatorio, no opcional — sin él cualquier colección con vector falla al crearse (ver sección Build).
+Esas credenciales solo importan la primera vez (siembran el admin inicial) — ver sección Auth y roles más abajo. `-tags sqlite_fts5` es obligatorio, no opcional — sin él cualquier colección con vector falla al crearse (ver sección Build).
 
 Escucha en `:8080`. Crea/usa `vec.db` en el directorio actual. Corre en background: checkpoint del WAL cada 5 min, backup rotado (`backups/`, conserva 7) cada 1h. `Ctrl+C` hace un checkpoint y backup final antes de salir.
 
 ## Build
 
 Las dependencias están vendorizadas (`vendor/`), así que `go build`/`go test` no necesitan red ni tocar el module cache — Go usa `vendor/` automáticamente si el directorio existe.
+
+> **Si corrés `go mod vendor` de nuevo** (ej. al agregar una dependencia nueva), se rompe el build con `fatal error: sqlite3.h: No such file or directory`. Motivo: `sqlite-vec-go-bindings/cgo` necesita ese header pero no lo trae, así que hay una copia puesta a mano en `vendor/github.com/asg017/sqlite-vec-go-bindings/cgo/sqlite3.h` (el mismo amalgamado que ya trae `mattn/go-sqlite3`, solo renombrado) — `go mod vendor` regenera el directorio entero desde cero y la borra, porque no es parte real de ningún módulo. Arreglo: `cp vendor/github.com/mattn/go-sqlite3/sqlite3-binding.h vendor/github.com/asg017/sqlite-vec-go-bindings/cgo/sqlite3.h` después de cada `go mod vendor`.
 
 **El tag `sqlite_fts5` es obligatorio**, no opcional — sin él el binario compila igual, pero cualquier `POST /collections` con `vector:true` falla en runtime con `no such module: fts5`. Seteá `GOFLAGS` una vez y todos los comandos de Go de abajo lo heredan sin repetirlo:
 
@@ -206,7 +208,7 @@ docker build -t microserver .
   ```
 - **Ollama en su propio contenedor**, en la misma red Docker: `OLLAMA_URL=http://ollama:11434/api/embed` (usando el nombre del servicio/contenedor en vez de `host.docker.internal`).
 
-`AUTH_USERNAME`/`AUTH_PASSWORD` son obligatorias — el contenedor no arranca sin ellas, igual que corriendo el binario directo. El volumen (`-v microserver-data:/data`) persiste `vec.db`, `vec.db-wal/-shm` y `backups/` entre recreaciones del contenedor; sin él, se pierde todo al hacer `docker rm`.
+`AUTH_USERNAME`/`AUTH_PASSWORD` solo siembran el admin inicial en una base vacía (ver Auth y roles) — el contenedor sí falla al arrancar si no hay usuarios y no están seteadas. El volumen (`-v microserver-data:/data`) persiste `vec.db`, `vec.db-wal/-shm` y `backups/` entre recreaciones del contenedor, incluidos los usuarios creados; sin él, se pierde todo al hacer `docker rm`.
 
 `-p 8080:8080` publica el puerto directo, sin TLS. Para TLS con reverse proxy en Docker, la forma correcta es **no** publicar el puerto de `microserver` al host — ponerlo en una red Docker interna y dejar que un contenedor de Caddy (con su puerto 443 sí publicado) lo alcance por nombre de servicio, no por loopback.
 
@@ -218,31 +220,36 @@ Antes de reemplazar el binario o la máquina, copiar `vec.db` y `backups/` — s
 
 Todas las respuestas son JSON. Los cuerpos de request van sin encabezado `Content-Type` estricto (curl con `-d` funciona tal cual).
 
-`GET /health` y `POST /login` son públicos. Todo lo demás requiere el header `Authorization: Bearer <token>` obtenido de `/login`.
+`GET /health`, `GET /metrics` y `POST /login` son públicos. Todo lo demás requiere el header `Authorization: Bearer <token>` obtenido de `/login`. Los `GET` (lectura) valen para cualquier usuario autenticado; todo lo que escribe (`POST`/`PUT`/`DELETE`) y `/users` entero requieren rol `admin` — un `read-only` autenticado recibe `403`, no `401`.
 
 ### Referencia rápida
 
-| Método | Ruta | Descripción |
-|---|---|---|
-| GET | `/health` | Chequeo de salud. Público. |
-| GET | `/metrics` | Métricas Prometheus. Público. |
-| POST | `/login` | Login, devuelve token. Público. |
-| POST | `/items` | Insertar en la tabla fija `vec_items`. |
-| GET | `/items` | Listar items de `vec_items`. |
-| PUT | `/items/{id}` | Reemplazar un item de `vec_items`. |
-| DELETE | `/items/{id}` | Borrar un item de `vec_items`. |
-| GET | `/search` | Búsqueda semántica en `vec_items`. |
-| POST | `/collections` | Crear una colección (con o sin vector, con referencias opcionales). |
-| GET | `/collections` | Listar colecciones. |
-| DELETE | `/collections/{name}` | Borrar una colección entera. |
-| POST | `/collections/{name}/items` | Insertar un item en una colección. |
-| GET | `/collections/{name}/items` | Listar items — con filtro y orden opcionales. |
-| GET | `/collections/{name}/items/{id}` | Traer un item por id. |
-| PUT | `/collections/{name}/items/{id}` | Reemplazar un item. |
-| DELETE | `/collections/{name}/items/{id}` | Borrar un item (respeta referencias `restrict`/`set_null`). |
-| GET | `/collections/{name}/search` | Búsqueda semántica (solo colecciones con vector) — filtro y orden opcionales. |
-| GET | `/collections/{name}/fulltext` | Búsqueda de texto completo FTS5 sobre `text` (solo colecciones con vector). |
-| GET | `/collections/{name}/aggregate` | `count`/`sum`/`avg`/`min`/`max`, con `group_by` y filtro opcionales. |
+| Método | Ruta | Rol | Descripción |
+|---|---|---|---|
+| GET | `/health` | público | Chequeo de salud. |
+| GET | `/metrics` | público | Métricas Prometheus. |
+| POST | `/login` | público | Login, devuelve token. |
+| POST | `/users` | admin | Crear usuario. |
+| GET | `/users` | admin | Listar usuarios (sin hash). |
+| DELETE | `/users/{username}` | admin | Borrar usuario (protege al último admin). |
+| POST | `/items` | admin | Insertar en la tabla fija `vec_items`. |
+| GET | `/items` | cualquiera | Listar items de `vec_items`. |
+| PUT | `/items/{id}` | admin | Reemplazar un item de `vec_items`. |
+| DELETE | `/items/{id}` | admin | Borrar un item de `vec_items`. |
+| GET | `/search` | cualquiera | Búsqueda semántica en `vec_items`. |
+| POST | `/collections` | admin | Crear una colección (con o sin vector, con referencias opcionales). |
+| GET | `/collections` | cualquiera | Listar colecciones. |
+| DELETE | `/collections/{name}` | admin | Borrar una colección entera. |
+| POST | `/collections/{name}/items` | admin | Insertar un item en una colección. |
+| GET | `/collections/{name}/items` | cualquiera | Listar items — con filtro y orden opcionales. |
+| GET | `/collections/{name}/items/{id}` | cualquiera | Traer un item por id. |
+| PUT | `/collections/{name}/items/{id}` | admin | Reemplazar un item. |
+| DELETE | `/collections/{name}/items/{id}` | admin | Borrar un item (respeta referencias `restrict`/`set_null`). |
+| GET | `/collections/{name}/search` | cualquiera | Búsqueda semántica (solo colecciones con vector) — filtro y orden opcionales. |
+| GET | `/collections/{name}/fulltext` | cualquiera | Búsqueda de texto completo FTS5 sobre `text` (solo colecciones con vector). |
+| GET | `/collections/{name}/aggregate` | cualquiera | `count`/`sum`/`avg`/`min`/`max`, con `group_by` y filtro opcionales. |
+
+"cualquiera" = cualquier usuario autenticado, admin o read-only.
 
 Detalle completo de cada uno abajo.
 
@@ -257,7 +264,7 @@ curl http://localhost:8080/health
 
 ### `POST /login`
 
-Autentica con las credenciales configuradas en `AUTH_USERNAME`/`AUTH_PASSWORD` y devuelve un token firmado (HMAC), válido por 1 hora. Público.
+Autentica contra la tabla de usuarios (no contra `AUTH_USERNAME`/`AUTH_PASSWORD` — esas solo siembran el admin inicial, ver Auth y roles abajo) y devuelve un token firmado (HMAC) que incluye el rol del usuario, válido por 1 hora. Público.
 
 **Body:**
 ```json
@@ -276,9 +283,49 @@ TOKEN=$(curl -s -X POST http://localhost:8080/login -d '{"username":"admin","pas
 curl http://localhost:8080/items -H "Authorization: Bearer $TOKEN"
 ```
 
-El token es stateless (sin sesión en el servidor) — se firma con una clave aleatoria generada en memoria al arrancar el proceso, así que **todos los tokens quedan inválidos si el servidor se reinicia**; hay que loguearse de nuevo.
+El token es stateless (sin sesión en el servidor) — se firma con una clave aleatoria generada en memoria al arrancar el proceso, así que **todos los tokens de todos los usuarios quedan inválidos si el servidor se reinicia**; hay que loguearse de nuevo. El rol viaja embebido en el token, así que si le cambiás el rol a alguien con un token vigente, ese token sigue reflejando el rol viejo hasta que expira (máx. 1h) — no hay revocación.
 
-### `POST /items` — requiere auth
+## Auth y roles
+
+No hay un solo usuario compartido — hay una tabla de usuarios (`username`, contraseña hasheada con bcrypt, rol). Dos roles, parejos en toda la API, no por colección:
+- **`admin`**: todo. Lectura, escritura, y gestión de usuarios.
+- **`read-only`**: solo lectura (`GET /items`, `/search`, `/collections/*` de lectura, `/aggregate`, `/fulltext`). Cualquier escritura o `/users` devuelve `403` (no `401` — está autenticado, solo no autorizado).
+
+`AUTH_USERNAME`/`AUTH_PASSWORD` siembran el primer admin **solo si la tabla de usuarios está vacía**. Después de eso se ignoran — gestioná usuarios con estos endpoints.
+
+### `POST /users` — requiere rol admin
+
+Crea un usuario. Contraseña mínimo 8 caracteres.
+
+**Body:**
+```json
+{"username": "lector", "password": "unabuenacontrasena", "role": "read-only"}
+```
+
+**Respuesta:** `201 Created` con `{"username","role"}`. `409` si ya existe. `400` si el username es inválido (mismo patrón que nombres de colección: `^[a-zA-Z][a-zA-Z0-9_]{0,62}$`), el rol no es `admin`/`read-only`, o la contraseña es muy corta.
+
+```bash
+curl -X POST http://localhost:8080/users -H "Authorization: Bearer $TOKEN" -d '{"username":"lector","password":"unabuenacontrasena","role":"read-only"}'
+```
+
+### `GET /users` — requiere rol admin
+
+Lista usuarios. Nunca incluye el hash de contraseña.
+
+```bash
+curl http://localhost:8080/users -H "Authorization: Bearer $TOKEN"
+# [{"username":"admin","role":"admin"},{"username":"lector","role":"read-only"}]
+```
+
+### `DELETE /users/{username}` — requiere rol admin
+
+Borra un usuario. `204`/`404`. Rechaza borrar el último admin que queda (`409`) — no hay superusuario ni forma de recuperarse de quedarse sin ningún admin.
+
+```bash
+curl -X DELETE http://localhost:8080/users/lector -H "Authorization: Bearer $TOKEN"
+```
+
+### `POST /items` — requiere rol admin
 
 Inserta un texto: se guarda tal cual (columna auxiliar, no indexada) y se genera su embedding (`embeddinggemma`, 768 dims), guardado en float32 + binario cuantizado.
 
@@ -299,7 +346,7 @@ Inserta un texto: se guarda tal cual (columna auxiliar, no indexada) y se genera
 curl -X POST http://localhost:8080/items -H "Authorization: Bearer $TOKEN" -d '{"text":"el gato duerme en el sofá"}'
 ```
 
-### `GET /items` — requiere auth
+### `GET /items`
 
 Lista los items existentes (id + texto).
 
@@ -318,7 +365,7 @@ Lista los items existentes (id + texto).
 curl "http://localhost:8080/items?limit=10&offset=0" -H "Authorization: Bearer $TOKEN"
 ```
 
-### `PUT /items/{id}` — requiere auth
+### `PUT /items/{id}` — requiere rol admin
 
 Reemplaza el texto de un item existente (re-embebe y sobreescribe sus vectores).
 
@@ -333,7 +380,7 @@ Reemplaza el texto de un item existente (re-embebe y sobreescribe sus vectores).
 curl -X PUT http://localhost:8080/items/123 -H "Authorization: Bearer $TOKEN" -d '{"text":"un felino descansa sobre el mueble"}'
 ```
 
-### `DELETE /items/{id}` — requiere auth
+### `DELETE /items/{id}` — requiere rol admin
 
 Borra un item.
 
@@ -343,7 +390,7 @@ Borra un item.
 curl -X DELETE http://localhost:8080/items/123 -H "Authorization: Bearer $TOKEN"
 ```
 
-### `GET /search` — requiere auth
+### `GET /search`
 
 Búsqueda semántica por similitud (KNN).
 
@@ -382,9 +429,9 @@ Las colecciones pueden **referenciarse entre sí** (ver `references` en `POST /c
 
 **Lo que esto NO es**, para no generar expectativas de más: no hay joins (`GET /collections/{name}/items/{id}` es el único lookup puntual — resolver una referencia son N llamadas, una por cada id), el filtrado, el orden y las agregaciones son solo sobre campos de nivel superior de `data`, uno a la vez — nada de orden multi-columna ni `group_by` por más de un campo, y no hay transacciones atómicas entre colecciones.
 
-Todos requieren auth.
+Todos requieren auth; los de escritura además requieren rol admin.
 
-### `POST /collections`
+### `POST /collections` — requiere rol admin
 
 Crea una colección. `dimensions` es obligatorio (1–8192) si `vector` es `true`. `references` es opcional — declara campos de `data` que deben apuntar a un id existente en otra colección (la colección referenciada debe existir de antes).
 
@@ -420,7 +467,7 @@ Lista las colecciones existentes.
 curl http://localhost:8080/collections -H "Authorization: Bearer $TOKEN"
 ```
 
-### `DELETE /collections/{name}`
+### `DELETE /collections/{name}` — requiere rol admin
 
 Borra la colección y todos sus items. `204` si se borró, `404` si no existía.
 
@@ -428,7 +475,7 @@ Borra la colección y todos sus items. `204` si se borró, `404` si no existía.
 curl -X DELETE http://localhost:8080/collections/documentos -H "Authorization: Bearer $TOKEN"
 ```
 
-### `POST /collections/{name}/items`
+### `POST /collections/{name}/items` — requiere rol admin
 
 Inserta un item. `text` es obligatorio solo si la colección tiene vector (es lo que se embebe); `data` es siempre opcional, cualquier JSON.
 
@@ -469,7 +516,7 @@ Trae un item por id — el único "lookup puntual" que existe (no hay joins: par
 curl http://localhost:8080/collections/autores/items/1 -H "Authorization: Bearer $TOKEN"
 ```
 
-### `PUT /collections/{name}/items/{id}`
+### `PUT /collections/{name}/items/{id}` — requiere rol admin
 
 Reemplaza `text`/`data` de un item. Mismo requisito de `text` que el insert, y las referencias en `data` se validan igual que en el insert.
 
@@ -477,7 +524,7 @@ Reemplaza `text`/`data` de un item. Mismo requisito de `text` que el insert, y l
 curl -X PUT http://localhost:8080/collections/notas/items/1 -H "Authorization: Bearer $TOKEN" -d '{"data":{"titulo":"compras","done":true}}'
 ```
 
-### `DELETE /collections/{name}/items/{id}`
+### `DELETE /collections/{name}/items/{id}` — requiere rol admin
 
 Borra un item. `204`/`404`. Si otras colecciones tienen items con referencia `restrict` apuntando a este, `409` (no borra nada). Con `set_null`, borra igual y pone `null` en el campo de cada item que lo referenciaba.
 
@@ -577,3 +624,6 @@ Etiquetado por **patrón de ruta**, no por URL cruda — `GET /collections/{name
 - **UPDATE**: implementado como `DELETE` + `INSERT` en una transacción, no como `UPDATE` SQL directo — `vec0` (la virtual table de `sqlite-vec`) no reconoce correctamente el tipo binario cuantizado en su path de `UPDATE`. Aplica también a colecciones con vector.
 - **Colecciones y nombres de tabla**: SQLite no permite parametrizar identificadores (nombres de tabla) en una consulta preparada, así que el nombre de colección se valida contra `^[a-zA-Z][a-zA-Z0-9_]{0,62}$` antes de interpolarlo en cualquier DDL — esa whitelist es toda la defensa contra inyección vía nombre de colección, no hay otra capa.
 - **Índice full-text (FTS5)**: cada colección con vector tiene una tabla FTS5 aparte (`coll_<nombre>_fts`), sincronizada a mano en Go en cada insert/update/delete — no con triggers de SQL sobre la tabla principal, porque esa tabla principal es una virtual table de `vec0` y no verificamos si los triggers funcionan bien ahí. `update`/`delete` la mantienen sincronizada dentro de la misma transacción que toca la tabla principal, así nunca quedan desincronizadas aunque algo falle a mitad de camino.
+- **bcrypt (`golang.org/x/crypto`)**: única dependencia externa nueva agregada deliberadamente a un proyecto que por lo demás evita dependencias de terceros (badges self-hosted, rate limiter hecho a mano, etc.). Hashear contraseñas a mano es un riesgo de seguridad real, no una preferencia estética — a diferencia del rate limiter (un algoritmo simple y bien entendido), esto sí amerita usar una librería madura y auditada.
+- **Rol embebido en el token, no en una tabla de sesiones**: el login mete el rol del usuario directo en el payload firmado (`username:role:expiry`). Mantiene el diseño stateless existente (sin sesiones en el servidor), pero significa que cambiarle el rol a alguien no afecta sus tokens ya emitidos hasta que expiran (máx. 1h) — no hay revocación.
+- **Protección del último admin**: `deleteUser` cuenta cuántos admins quedan antes de borrar uno; si es el último, rechaza con `409`. No hay superusuario de emergencia ni forma de recuperar acceso si te quedás sin ningún admin — por diseño, dado que tampoco había uno antes de esta feature.

@@ -141,7 +141,7 @@ func TestDecodeJSONOversizedBodyReturns413(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	token := testAuth().generateToken(testAuth().Username)
+	token := testAuth().generateToken("admin", RoleAdmin)
 	body := []byte(`{"text":"this JSON body is deliberately longer than twenty bytes"}`)
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/items", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)

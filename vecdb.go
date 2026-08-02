@@ -63,6 +63,10 @@ func openVecDB(path string) (*VecStore, error) {
 		write.Close()
 		return nil, fmt.Errorf("creating collection_references table: %w", err)
 	}
+	if _, err := write.Exec(usersSchema); err != nil {
+		write.Close()
+		return nil, fmt.Errorf("creating users table: %w", err)
+	}
 	// journal_size_limit caps how large the -wal file is left after a
 	// checkpoint truncates it, so it doesn't shrink to 0 and immediately
 	// regrow under steady write load. 64MB.

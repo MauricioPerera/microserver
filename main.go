@@ -52,6 +52,15 @@ func main() {
 	}
 	defer db.Close()
 
+	// Only takes effect the very first time the server runs against an
+	// empty users table — seeds the initial admin from AUTH_USERNAME/
+	// AUTH_PASSWORD. Every later startup is a no-op here regardless of
+	// what those env vars contain; manage users via /users after that.
+	if err := ensureBootstrapAdmin(db, auth.BootstrapUsername, auth.BootstrapPassword); err != nil {
+		slog.Error("bootstrapping admin user", "error", err)
+		os.Exit(1)
+	}
+
 	stop := make(chan struct{})
 	db.StartCheckpointLoop(checkpointInterval, stop)
 	db.StartBackupLoop(backupDir, backupInterval, backupKeep, stop)

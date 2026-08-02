@@ -14,10 +14,21 @@ import (
 
 func testAuth() AuthConfig {
 	return AuthConfig{
-		Username: "admin",
-		Password: "s3cret",
-		Secret:   []byte("fixed-test-secret-not-random-ok"),
-		TTL:      time.Hour,
+		BootstrapUsername: "admin",
+		BootstrapPassword: "s3cretpw",
+		Secret:            []byte("fixed-test-secret-not-random-ok"),
+		TTL:               time.Hour,
+	}
+}
+
+// seedTestAdmin creates the "admin"/"s3cretpw" user matching testAuth()'s
+// bootstrap credentials directly in store — needed by any test that
+// exercises POST /login for real (DB-backed), unlike authedRequest/
+// doAuthed below, which mint a token directly and never touch the DB.
+func seedTestAdmin(t *testing.T, store *VecStore) {
+	t.Helper()
+	if err := createUser(store, "admin", "s3cretpw", RoleAdmin); err != nil {
+		t.Fatalf("seeding test admin user: %v", err)
 	}
 }
 
@@ -31,7 +42,7 @@ func authedRequest(t *testing.T, method, url string, body []byte) *http.Request 
 	if err != nil {
 		t.Fatalf("building request: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+testAuth().generateToken(testAuth().Username))
+	req.Header.Set("Authorization", "Bearer "+testAuth().generateToken("admin", RoleAdmin))
 	return req
 }
 
@@ -70,12 +81,13 @@ func TestHTTPLogin(t *testing.T) {
 		t.Fatalf("openVecDB: %v", err)
 	}
 	defer store.Close()
+	seedTestAdmin(t, store)
 
 	server := httptest.NewServer(newRouter(store, testAuth()))
 	defer server.Close()
 
 	t.Run("valid credentials", func(t *testing.T) {
-		body, _ := json.Marshal(loginRequest{Username: "admin", Password: "s3cret"})
+		body, _ := json.Marshal(loginRequest{Username: "admin", Password: "s3cretpw"})
 		resp, err := http.Post(server.URL+"/login", "application/json", bytes.NewReader(body))
 		if err != nil {
 			t.Fatalf("POST /login: %v", err)
@@ -156,7 +168,7 @@ func TestHTTPProtectedRequiresAuth(t *testing.T) {
 		expired := testAuth()
 		expired.TTL = -time.Hour
 		req, _ := http.NewRequest(http.MethodGet, server.URL+"/items", nil)
-		req.Header.Set("Authorization", "Bearer "+expired.generateToken(expired.Username))
+		req.Header.Set("Authorization", "Bearer "+expired.generateToken("admin", RoleAdmin))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("GET /items: %v", err)

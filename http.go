@@ -34,35 +34,48 @@ const (
 )
 
 // newRouter wires up all routes. /health and /login are public; everything
-// else requires a valid bearer token issued by /login. /login additionally
-// gets its own rate limiter (see loginRateLimit* above) — general API rate
-// limiting and body size limits are applied outside this function, as
-// middleware wrapping the handler main.go actually serves, so they don't
-// affect callers (tests included) that exercise this router directly.
+// else requires a valid bearer token issued by /login. Reads (GET) are
+// open to any authenticated user regardless of role; writes (POST/PUT/
+// DELETE) and all of /users additionally require the admin role — a
+// read-only user gets 403 on those, not 401. /login gets its own rate
+// limiter (see loginRateLimit* above) — general API rate limiting and body
+// size limits are applied outside this function, as middleware wrapping
+// the handler main.go actually serves, so they don't affect callers
+// (tests included) that exercise this router directly.
 func newRouter(store *VecStore, auth AuthConfig) http.Handler {
 	loginLimiter := newRateLimiter(loginRateLimitPerSecond, loginRateLimitBurst)
 
+	// admin composes requireAuth+requireAdmin so route registrations below
+	// read as "auth(...)" for any authenticated user, "admin(...)" for
+	// admin-only, without repeating the nesting at each call site.
+	authOnly := func(h http.Handler) http.Handler { return requireAuth(auth, h) }
+	admin := func(h http.Handler) http.Handler { return requireAuth(auth, requireAdmin(h)) }
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
-	mux.Handle("POST /login", rateLimitMiddleware(loginLimiter, handleLogin(auth)))
+	mux.Handle("POST /login", rateLimitMiddleware(loginLimiter, handleLogin(auth, store)))
 
-	mux.Handle("GET /items", requireAuth(auth, handleList(store)))
-	mux.Handle("POST /items", requireAuth(auth, handleInsert(store)))
-	mux.Handle("PUT /items/{id}", requireAuth(auth, handleUpdate(store)))
-	mux.Handle("DELETE /items/{id}", requireAuth(auth, handleDelete(store)))
-	mux.Handle("GET /search", requireAuth(auth, handleSearch(store)))
+	mux.Handle("GET /items", authOnly(handleList(store)))
+	mux.Handle("POST /items", admin(handleInsert(store)))
+	mux.Handle("PUT /items/{id}", admin(handleUpdate(store)))
+	mux.Handle("DELETE /items/{id}", admin(handleDelete(store)))
+	mux.Handle("GET /search", authOnly(handleSearch(store)))
 
-	mux.Handle("POST /collections", requireAuth(auth, handleCreateCollection(store)))
-	mux.Handle("GET /collections", requireAuth(auth, handleListCollections(store)))
-	mux.Handle("DELETE /collections/{name}", requireAuth(auth, handleDropCollection(store)))
-	mux.Handle("POST /collections/{name}/items", requireAuth(auth, handleInsertDocument(store)))
-	mux.Handle("GET /collections/{name}/items", requireAuth(auth, handleListDocuments(store)))
-	mux.Handle("GET /collections/{name}/items/{id}", requireAuth(auth, handleGetDocument(store)))
-	mux.Handle("PUT /collections/{name}/items/{id}", requireAuth(auth, handleUpdateDocument(store)))
-	mux.Handle("DELETE /collections/{name}/items/{id}", requireAuth(auth, handleDeleteDocument(store)))
-	mux.Handle("GET /collections/{name}/search", requireAuth(auth, handleSearchDocuments(store)))
-	mux.Handle("GET /collections/{name}/aggregate", requireAuth(auth, handleAggregate(store)))
-	mux.Handle("GET /collections/{name}/fulltext", requireAuth(auth, handleFullTextSearch(store)))
+	mux.Handle("POST /collections", admin(handleCreateCollection(store)))
+	mux.Handle("GET /collections", authOnly(handleListCollections(store)))
+	mux.Handle("DELETE /collections/{name}", admin(handleDropCollection(store)))
+	mux.Handle("POST /collections/{name}/items", admin(handleInsertDocument(store)))
+	mux.Handle("GET /collections/{name}/items", authOnly(handleListDocuments(store)))
+	mux.Handle("GET /collections/{name}/items/{id}", authOnly(handleGetDocument(store)))
+	mux.Handle("PUT /collections/{name}/items/{id}", admin(handleUpdateDocument(store)))
+	mux.Handle("DELETE /collections/{name}/items/{id}", admin(handleDeleteDocument(store)))
+	mux.Handle("GET /collections/{name}/search", authOnly(handleSearchDocuments(store)))
+	mux.Handle("GET /collections/{name}/aggregate", authOnly(handleAggregate(store)))
+	mux.Handle("GET /collections/{name}/fulltext", authOnly(handleFullTextSearch(store)))
+
+	mux.Handle("POST /users", admin(handleCreateUser(store)))
+	mux.Handle("GET /users", admin(handleListUsers(store)))
+	mux.Handle("DELETE /users/{username}", admin(handleDeleteUser(store)))
 	return mux
 }
 
