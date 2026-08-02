@@ -31,16 +31,21 @@ paths:
       tags: [ops]
       summary: Chequeo de salud
       operationId: health
+      description: >
+        Público. Pinguea la base de datos y hace un GET /api/tags liviano a
+        Ollama (sin computar embeddings), cada uno con timeout de 3s.
       security: []
       responses:
         "200":
-          description: OK
+          description: Todos los checks OK
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string, example: ok }
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+        "503":
+          description: Al menos un check falló
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
 
   /metrics:
     get:
@@ -871,6 +876,16 @@ components:
       properties:
         error: { type: string }
       required: [error]
+
+    HealthResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        checks:
+          type: object
+          additionalProperties: { type: string }
+          description: "Por dependencia: \"ok\" o el detalle del error."
+      required: [status, checks]
 
     LoginRequest:
       type: object

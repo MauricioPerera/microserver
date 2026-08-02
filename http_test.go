@@ -55,6 +55,10 @@ func doAuthed(t *testing.T, method, url string, body []byte) *http.Response {
 	return resp
 }
 
+// TestHTTPHealth requires a real, reachable Ollama — same requirement the
+// rest of this suite already has for embed()-calling tests, so this adds
+// no new dependency on top of what's already needed to run `go test ./...`
+// here.
 func TestHTTPHealth(t *testing.T) {
 	store, err := openVecDB(":memory:")
 	if err != nil {
@@ -72,6 +76,52 @@ func TestHTTPHealth(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result healthCheckResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decoding health response: %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("expected status ok, got %+v", result)
+	}
+	if result.Checks["database"] != "ok" {
+		t.Fatalf("expected database check ok, got %q", result.Checks["database"])
+	}
+	if result.Checks["ollama"] != "ok" {
+		t.Fatalf("expected ollama check ok, got %q", result.Checks["ollama"])
+	}
+}
+
+func TestHTTPHealthReports503WhenDatabaseIsClosed(t *testing.T) {
+	store, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+
+	server := httptest.NewServer(newRouter(store, testAuth()))
+	defer server.Close()
+
+	store.Close() // simulate a dependency failure without a live Ollama outage
+
+	resp, err := http.Get(server.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 once the database is unreachable, got %d", resp.StatusCode)
+	}
+
+	var result healthCheckResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decoding health response: %v", err)
+	}
+	if result.Status != "degraded" {
+		t.Fatalf("expected status degraded, got %+v", result)
+	}
+	if result.Checks["database"] == "ok" {
+		t.Fatal("expected the database check to report a failure")
 	}
 }
 

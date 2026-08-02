@@ -7,6 +7,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Todo esto está en `master`, sin cortar como release todavía.
 
 ### Added
+- `GET /health` ahora chequea de verdad: pinguea la DB y hace un `GET /api/tags` liviano a Ollama (timeout 3s cada uno). `200` solo si ambos están bien, `503` con el detalle en `checks` si no.
 - `PUT /collections/{name}/rename` — cambia el nombre lógico de una colección; datos, vectores, índice full-text y referencias (propias y entrantes) quedan intactos.
 - CORS opcional (`CORS_ALLOWED_ORIGINS`): sin setear, sin cambios (sin headers); `*` o lista separada por comas habilita orígenes específicos, con manejo de preflight `OPTIONS`.
 - `GET /collections/{name}/export` — vuelca todos los items de una colección como JSON, sin paginar. Misma forma que un item de `POST .../items/bulk`, así que recargar un export es trocearlo en lotes de ≤100 y postearlos ahí (no hay endpoint de import separado).

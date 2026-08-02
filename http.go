@@ -58,7 +58,7 @@ func newRouter(store *VecStore, auth AuthConfig) http.Handler {
 	admin := func(h http.Handler) http.Handler { return requireAuth(auth, requireAdmin(h)) }
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", handleHealth)
+	mux.Handle("GET /health", handleHealth(store))
 	mux.Handle("POST /login", rateLimitMiddleware(loginLimiter, handleLogin(auth, store)))
 
 	mux.Handle("GET /items", authOnly(handleList(store)))
@@ -89,10 +89,6 @@ func newRouter(store *VecStore, auth AuthConfig) http.Handler {
 	mux.Handle("DELETE /users/{username}", admin(handleDeleteUser(store)))
 	mux.Handle("PUT /users/{username}/password", admin(handleResetPassword(store)))
 	return mux
-}
-
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 const (

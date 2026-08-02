@@ -264,11 +264,14 @@ Detalle completo de cada uno abajo.
 
 ### `GET /health`
 
-Chequeo de salud. Público.
+Chequeo de salud. Público. No es solo "el proceso responde" — pinguea la base de datos y hace un `GET /api/tags` liviano a Ollama (no computa ningún embedding), cada uno con un timeout de 3s. `200` solo si ambos responden bien; `503` si alguno falla, con el detalle en `checks`.
 
 ```bash
 curl http://localhost:8080/health
-# {"status":"ok"}
+# {"status":"ok","checks":{"database":"ok","ollama":"ok"}}
+
+# con Ollama caído o inalcanzable:
+# 503 {"status":"degraded","checks":{"database":"ok","ollama":"dial tcp ...: connection refused"}}
 ```
 
 ### `POST /login`
