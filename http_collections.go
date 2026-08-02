@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 )
@@ -104,6 +105,58 @@ func handleInsertDocument(store *VecStore) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusCreated, insertResponse{ID: id})
+	}
+}
+
+// handleBulkInsertDocument: POST /collections/{name}/items/bulk
+// [{"id":123?, "text":"..."?, "data":{...}?}, ...]
+// Same all-or-nothing semantics as the fixed table's bulk insert. Limited
+// to bulkMaxItems items per request.
+func handleBulkInsertDocument(store *VecStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		coll, err := getCollection(store, r.PathValue("name"))
+		if err != nil {
+			if errors.Is(err, ErrCollectionNotFound) {
+				writeError(w, http.StatusNotFound, "collection not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		var reqs []documentRequest
+		if !decodeJSON(w, r, &reqs) {
+			return
+		}
+		if len(reqs) == 0 {
+			writeError(w, http.StatusBadRequest, "at least one item is required")
+			return
+		}
+		if len(reqs) > bulkMaxItems {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d items per bulk request", bulkMaxItems))
+			return
+		}
+
+		items := make([]BulkDocumentItem, len(reqs))
+		for i, req := range reqs {
+			if coll.HasVector && req.Text == "" {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("item %d: text is required for vector collections", i))
+				return
+			}
+			items[i] = BulkDocumentItem{ID: req.ID, Text: req.Text, Data: req.Data}
+		}
+
+		ids, err := insertDocumentBulk(store, coll, items)
+		if err != nil {
+			writeDocumentError(w, err)
+			return
+		}
+
+		results := make([]insertResponse, len(ids))
+		for i, id := range ids {
+			results[i] = insertResponse{ID: id}
+		}
+		writeJSON(w, http.StatusCreated, results)
 	}
 }
 

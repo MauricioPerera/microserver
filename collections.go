@@ -549,6 +549,108 @@ func insertDocument(s *VecStore, coll *Collection, id *int64, text string, data 
 	return res.LastInsertId()
 }
 
+// BulkDocumentItem is one entry in a bulk insert request for a collection.
+// ID nil means let SQLite assign one, same as insertDocument.
+type BulkDocumentItem struct {
+	ID   *int64
+	Text string
+	Data json.RawMessage
+}
+
+// insertDocumentBulk inserts multiple documents into a collection in a
+// single transaction — either the whole batch lands or none of it does.
+// References are validated and vectors are embedded for every item up
+// front, before the transaction starts: both can involve network/extra
+// queries, and neither should hold the write lock while they run.
+func insertDocumentBulk(s *VecStore, coll *Collection, items []BulkDocumentItem) ([]int64, error) {
+	type prepared struct {
+		id         *int64
+		text       string
+		dataStr    string
+		serialized []byte
+	}
+
+	preparedItems := make([]prepared, len(items))
+	for i, it := range items {
+		if err := validateReferences(s, coll.Name, it.Data); err != nil {
+			return nil, fmt.Errorf("item %d: %w", i, err)
+		}
+		p := prepared{id: it.ID, text: it.Text, dataStr: dataOrEmpty(it.Data)}
+		if coll.HasVector {
+			vec, err := embed(it.Text)
+			if err != nil {
+				return nil, fmt.Errorf("item %d: embedding text: %w", i, err)
+			}
+			serialized, err := sqlite_vec.SerializeFloat32(vec)
+			if err != nil {
+				return nil, fmt.Errorf("item %d: serializing vector: %w", i, err)
+			}
+			p.serialized = serialized
+		}
+		preparedItems[i] = p
+	}
+
+	table := quoteIdent(coll.tableName)
+
+	tx, err := s.write.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("starting bulk insert transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	ids := make([]int64, len(preparedItems))
+	for i, p := range preparedItems {
+		var finalID int64
+		switch {
+		case coll.HasVector && p.id != nil:
+			if _, err := tx.Exec(
+				fmt.Sprintf(`INSERT INTO %s(id, embedding, embedding_bit, text, data) VALUES (?, ?, vec_quantize_binary(?), ?, ?)`, table),
+				*p.id, p.serialized, p.serialized, p.text, p.dataStr,
+			); err != nil {
+				return nil, fmt.Errorf("item %d: inserting document: %w", i, err)
+			}
+			finalID = *p.id
+		case coll.HasVector:
+			res, err := tx.Exec(
+				fmt.Sprintf(`INSERT INTO %s(embedding, embedding_bit, text, data) VALUES (?, vec_quantize_binary(?), ?, ?)`, table),
+				p.serialized, p.serialized, p.text, p.dataStr,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("item %d: inserting document: %w", i, err)
+			}
+			finalID, err = res.LastInsertId()
+			if err != nil {
+				return nil, fmt.Errorf("item %d: getting inserted id: %w", i, err)
+			}
+		case p.id != nil:
+			if _, err := tx.Exec(fmt.Sprintf(`INSERT INTO %s(id, data) VALUES (?, ?)`, table), *p.id, p.dataStr); err != nil {
+				return nil, fmt.Errorf("item %d: inserting document: %w", i, err)
+			}
+			finalID = *p.id
+		default:
+			res, err := tx.Exec(fmt.Sprintf(`INSERT INTO %s(data) VALUES (?)`, table), p.dataStr)
+			if err != nil {
+				return nil, fmt.Errorf("item %d: inserting document: %w", i, err)
+			}
+			finalID, err = res.LastInsertId()
+			if err != nil {
+				return nil, fmt.Errorf("item %d: getting inserted id: %w", i, err)
+			}
+		}
+		if coll.HasVector {
+			if err := insertFullTextRow(tx, coll, finalID, p.text); err != nil {
+				return nil, fmt.Errorf("item %d: %w", i, err)
+			}
+		}
+		ids[i] = finalID
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing bulk insert: %w", err)
+	}
+	return ids, nil
+}
+
 // updateDocument replaces an existing item's text/data. For vector
 // collections this is delete+insert in a transaction, same workaround as
 // updateText on the fixed table — vec0's UPDATE path doesn't handle typed

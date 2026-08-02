@@ -157,6 +157,75 @@ func insertTextAuto(s *VecStore, text string) (int64, error) {
 	return res.LastInsertId()
 }
 
+// BulkItem is one entry in a bulk insert request for vec_items. ID 0 means
+// let SQLite assign one, same as insertTextAuto.
+type BulkItem struct {
+	ID   int64
+	Text string
+}
+
+// insertTextBulk embeds and inserts multiple items into vec_items in a
+// single transaction — either the whole batch lands or none of it does, so
+// a caller never has to reconcile a partially-applied batch. Embedding
+// happens before the transaction starts, since embed() is a network call to
+// Ollama and shouldn't hold the write lock while it runs.
+func insertTextBulk(s *VecStore, items []BulkItem) ([]int64, error) {
+	type prepared struct {
+		id         int64
+		text       string
+		serialized []byte
+	}
+	preparedItems := make([]prepared, len(items))
+	for i, it := range items {
+		vec, err := embed(it.Text)
+		if err != nil {
+			return nil, fmt.Errorf("item %d: embedding text: %w", i, err)
+		}
+		serialized, err := sqlite_vec.SerializeFloat32(vec)
+		if err != nil {
+			return nil, fmt.Errorf("item %d: serializing vector: %w", i, err)
+		}
+		preparedItems[i] = prepared{id: it.ID, text: it.Text, serialized: serialized}
+	}
+
+	tx, err := s.write.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("starting bulk insert transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	ids := make([]int64, len(preparedItems))
+	for i, p := range preparedItems {
+		if p.id != 0 {
+			if _, err := tx.Exec(
+				`INSERT INTO vec_items(id, embedding, embedding_bit, text) VALUES (?, ?, vec_quantize_binary(?), ?)`,
+				p.id, p.serialized, p.serialized, p.text,
+			); err != nil {
+				return nil, fmt.Errorf("item %d: inserting vector: %w", i, err)
+			}
+			ids[i] = p.id
+			continue
+		}
+		res, err := tx.Exec(
+			`INSERT INTO vec_items(embedding, embedding_bit, text) VALUES (?, vec_quantize_binary(?), ?)`,
+			p.serialized, p.serialized, p.text,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("item %d: inserting vector: %w", i, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return nil, fmt.Errorf("item %d: getting inserted id: %w", i, err)
+		}
+		ids[i] = id
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing bulk insert: %w", err)
+	}
+	return ids, nil
+}
+
 // updateText re-embeds text and replaces an existing item's vectors and
 // stored text.
 //

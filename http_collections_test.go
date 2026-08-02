@@ -146,6 +146,73 @@ func TestHTTPCollectionsFullFlow(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestHTTPBulkInsertDocuments(t *testing.T) {
+	store, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer store.Close()
+
+	server := httptest.NewServer(newRouter(store, testAuth()))
+	defer server.Close()
+
+	body, _ := json.Marshal(createCollectionRequest{Name: "posts", Vector: true, Dimensions: 768})
+	resp := doAuthed(t, http.MethodPost, server.URL+"/collections", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /collections status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	docs := []documentRequest{
+		{Text: "primer post", Data: json.RawMessage(`{"autor":"ana"}`)},
+		{Text: "segundo post", Data: json.RawMessage(`{"autor":"beto"}`)},
+	}
+	body, _ = json.Marshal(docs)
+	resp = doAuthed(t, http.MethodPost, server.URL+"/collections/posts/items/bulk", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /collections/posts/items/bulk status=%d", resp.StatusCode)
+	}
+	var results []insertResponse
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		t.Fatalf("decoding bulk insert response: %v", err)
+	}
+	resp.Body.Close()
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	coll, err := getCollection(store, "posts")
+	if err != nil {
+		t.Fatalf("getCollection: %v", err)
+	}
+	listed, err := listDocuments(store, coll, 10, 0, nil, nil)
+	if err != nil {
+		t.Fatalf("listDocuments: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("expected 2 documents, got %d", len(listed))
+	}
+
+	// missing text on a vector collection rolls back the whole batch
+	badBody, _ := json.Marshal([]documentRequest{
+		{Text: "tercer post"},
+		{Data: json.RawMessage(`{"autor":"sin texto"}`)},
+	})
+	resp = doAuthed(t, http.MethodPost, server.URL+"/collections/posts/items/bulk", badBody)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for item missing text, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	listed, err = listDocuments(store, coll, 10, 0, nil, nil)
+	if err != nil {
+		t.Fatalf("listDocuments: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("expected still only 2 documents after rejected batch, got %d", len(listed))
+	}
+}
+
 func TestHTTPCollectionInjectionAttemptRejected(t *testing.T) {
 	store, err := openVecDB(":memory:")
 	if err != nil {

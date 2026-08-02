@@ -231,6 +231,96 @@ func TestHTTPInsertAndSearch(t *testing.T) {
 	t.Logf("top result: id=%d distance=%f", results[0].ID, results[0].Distance)
 }
 
+func TestHTTPBulkInsert(t *testing.T) {
+	store, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer store.Close()
+
+	server := httptest.NewServer(newRouter(store, testAuth()))
+	defer server.Close()
+
+	body, _ := json.Marshal([]insertRequest{
+		{Text: "el gato duerme en el sofá"},
+		{ID: 999, Text: "un felino descansa sobre el mueble"},
+		{Text: "la bolsa de valores subió hoy"},
+	})
+	resp := doAuthed(t, http.MethodPost, server.URL+"/items/bulk", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /items/bulk status=%d", resp.StatusCode)
+	}
+
+	var results []insertResponse
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		t.Fatalf("decoding bulk insert response: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	if results[1].ID != 999 {
+		t.Fatalf("expected explicit id 999 to be honored, got %d", results[1].ID)
+	}
+	if results[0].ID == 0 || results[2].ID == 0 {
+		t.Fatal("expected auto-assigned ids to be non-zero")
+	}
+
+	items, err := listItems(store, 10, 0)
+	if err != nil {
+		t.Fatalf("listItems: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items in store, got %d", len(items))
+	}
+}
+
+func TestHTTPBulkInsertRejectsEmptyAndOversizedBatches(t *testing.T) {
+	store, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer store.Close()
+
+	server := httptest.NewServer(newRouter(store, testAuth()))
+	defer server.Close()
+
+	body, _ := json.Marshal([]insertRequest{})
+	resp := doAuthed(t, http.MethodPost, server.URL+"/items/bulk", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty batch, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	oversized := make([]insertRequest, bulkMaxItems+1)
+	for i := range oversized {
+		oversized[i] = insertRequest{Text: "x"}
+	}
+	body, _ = json.Marshal(oversized)
+	resp = doAuthed(t, http.MethodPost, server.URL+"/items/bulk", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized batch, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// one bad item (missing text) rolls back the whole batch — nothing gets
+	// inserted, not even the valid items before/after it.
+	body, _ = json.Marshal([]insertRequest{{Text: "ok"}, {Text: ""}})
+	resp = doAuthed(t, http.MethodPost, server.URL+"/items/bulk", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for batch with a missing-text item, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	items, err := listItems(store, 10, 0)
+	if err != nil {
+		t.Fatalf("listItems: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no items to have been inserted, got %d", len(items))
+	}
+}
+
 func TestHTTPList(t *testing.T) {
 	store, err := openVecDB(":memory:")
 	if err != nil {

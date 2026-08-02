@@ -17,6 +17,12 @@ type insertResponse struct {
 	ID int64 `json:"id"`
 }
 
+// bulkMaxItems caps how many items a single bulk insert request may carry —
+// each one embeds a text via a network call to Ollama, so an unbounded
+// batch would tie up the request (and the single write connection) for an
+// unpredictable amount of time.
+const bulkMaxItems = 100
+
 type searchResult struct {
 	ID       int64   `json:"id"`
 	Text     string  `json:"text"`
@@ -57,6 +63,7 @@ func newRouter(store *VecStore, auth AuthConfig) http.Handler {
 
 	mux.Handle("GET /items", authOnly(handleList(store)))
 	mux.Handle("POST /items", admin(handleInsert(store)))
+	mux.Handle("POST /items/bulk", admin(handleBulkInsert(store)))
 	mux.Handle("PUT /items/{id}", admin(handleUpdate(store)))
 	mux.Handle("DELETE /items/{id}", admin(handleDelete(store)))
 	mux.Handle("GET /search", authOnly(handleSearch(store)))
@@ -65,6 +72,7 @@ func newRouter(store *VecStore, auth AuthConfig) http.Handler {
 	mux.Handle("GET /collections", authOnly(handleListCollections(store)))
 	mux.Handle("DELETE /collections/{name}", admin(handleDropCollection(store)))
 	mux.Handle("POST /collections/{name}/items", admin(handleInsertDocument(store)))
+	mux.Handle("POST /collections/{name}/items/bulk", admin(handleBulkInsertDocument(store)))
 	mux.Handle("GET /collections/{name}/items", authOnly(handleListDocuments(store)))
 	mux.Handle("GET /collections/{name}/items/{id}", authOnly(handleGetDocument(store)))
 	mux.Handle("PUT /collections/{name}/items/{id}", admin(handleUpdateDocument(store)))
@@ -147,6 +155,48 @@ func handleInsert(store *VecStore) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusCreated, insertResponse{ID: id})
+	}
+}
+
+// handleBulkInsert: POST /items/bulk [{"text": "...", "id": 123?}, ...]
+// Atomic: every item is embedded first, then all inserted in a single
+// transaction, so a caller never has to reconcile a partially-applied
+// batch. Limited to bulkMaxItems items per request.
+func handleBulkInsert(store *VecStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var reqs []insertRequest
+		if !decodeJSON(w, r, &reqs) {
+			return
+		}
+		if len(reqs) == 0 {
+			writeError(w, http.StatusBadRequest, "at least one item is required")
+			return
+		}
+		if len(reqs) > bulkMaxItems {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d items per bulk request", bulkMaxItems))
+			return
+		}
+
+		items := make([]BulkItem, len(reqs))
+		for i, req := range reqs {
+			if req.Text == "" {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("item %d: text is required", i))
+				return
+			}
+			items[i] = BulkItem{ID: req.ID, Text: req.Text}
+		}
+
+		ids, err := insertTextBulk(store, items)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		results := make([]insertResponse, len(ids))
+		for i, id := range ids {
+			results[i] = insertResponse{ID: id}
+		}
+		writeJSON(w, http.StatusCreated, results)
 	}
 }
 

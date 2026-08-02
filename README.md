@@ -234,6 +234,7 @@ Todas las respuestas son JSON. Los cuerpos de request van sin encabezado `Conten
 | DELETE | `/users/{username}` | admin | Borrar usuario (protege al último admin). |
 | PUT | `/users/me/password` | cualquiera | Cambiar la propia contraseña. |
 | POST | `/items` | admin | Insertar en la tabla fija `vec_items`. |
+| POST | `/items/bulk` | admin | Insertar varios items en `vec_items` (todo-o-nada, máx. 100). |
 | GET | `/items` | cualquiera | Listar items de `vec_items`. |
 | PUT | `/items/{id}` | admin | Reemplazar un item de `vec_items`. |
 | DELETE | `/items/{id}` | admin | Borrar un item de `vec_items`. |
@@ -242,6 +243,7 @@ Todas las respuestas son JSON. Los cuerpos de request van sin encabezado `Conten
 | GET | `/collections` | cualquiera | Listar colecciones. |
 | DELETE | `/collections/{name}` | admin | Borrar una colección entera. |
 | POST | `/collections/{name}/items` | admin | Insertar un item en una colección. |
+| POST | `/collections/{name}/items/bulk` | admin | Insertar varios items en una colección (todo-o-nada, máx. 100). |
 | GET | `/collections/{name}/items` | cualquiera | Listar items — con filtro y orden opcionales. |
 | GET | `/collections/{name}/items/{id}` | cualquiera | Traer un item por id. |
 | PUT | `/collections/{name}/items/{id}` | admin | Reemplazar un item. |
@@ -360,6 +362,26 @@ Inserta un texto: se guarda tal cual (columna auxiliar, no indexada) y se genera
 
 ```bash
 curl -X POST http://localhost:8080/items -H "Authorization: Bearer $TOKEN" -d '{"text":"el gato duerme en el sofá"}'
+```
+
+### `POST /items/bulk` — requiere rol admin
+
+Inserta varios items en una sola llamada. Todo-o-nada: si un item falla (ej. le falta `text`), no se inserta ninguno del lote — no hay resultados parciales que reconciliar. Máximo 100 items por request.
+
+**Body:**
+```json
+[{"text": "el gato duerme en el sofá"}, {"id": 555, "text": "un felino descansa"}]
+```
+
+**Respuesta:** `201 Created`, mismo orden que el request
+```json
+[{"id": 1}, {"id": 555}]
+```
+
+**Errores:** `400` si el lote está vacío, supera 100 items, o algún item no tiene `text`.
+
+```bash
+curl -X POST http://localhost:8080/items/bulk -H "Authorization: Bearer $TOKEN" -d '[{"text":"uno"},{"text":"dos"}]'
 ```
 
 ### `GET /items`
@@ -505,6 +527,21 @@ Inserta un item. `text` es obligatorio solo si la colección tiene vector (es lo
 ```bash
 curl -X POST http://localhost:8080/collections/documentos/items -H "Authorization: Bearer $TOKEN" -d '{"text":"el gato duerme en el sofá","data":{"categoria":"animales"}}'
 curl -X POST http://localhost:8080/collections/notas/items -H "Authorization: Bearer $TOKEN" -d '{"data":{"titulo":"compras","items":["leche","pan"]}}'
+```
+
+### `POST /collections/{name}/items/bulk` — requiere rol admin
+
+Inserta varios items en una sola llamada. Mismo todo-o-nada que `POST /items/bulk`, máximo 100 items por request.
+
+**Body:**
+```json
+[{"text": "post uno", "data": {"autor": "ana"}}, {"text": "post dos", "data": {"autor": "beto"}}]
+```
+
+**Respuesta:** `201 Created`, mismo orden que el request: `[{"id": 1}, {"id": 2}]`. `404` si la colección no existe. `400` si el lote está vacío, supera 100 items, o algún item no tiene `text` (colecciones con vector).
+
+```bash
+curl -X POST http://localhost:8080/collections/documentos/items/bulk -H "Authorization: Bearer $TOKEN" -d '[{"text":"uno"},{"text":"dos"}]'
 ```
 
 ### `GET /collections/{name}/items`
