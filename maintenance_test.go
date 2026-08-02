@@ -6,6 +6,32 @@ import (
 	"testing"
 )
 
+func TestBackupFilePathRejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+
+	valid := "backup-20260101-120000.123456789.db"
+	path, err := backupFilePath(dir, valid)
+	if err != nil {
+		t.Fatalf("expected a well-formed name to be accepted: %v", err)
+	}
+	if filepath.Dir(path) != dir {
+		t.Fatalf("expected the resolved path to stay inside %s, got %s", dir, path)
+	}
+
+	for _, bad := range []string{
+		"../vec.db",
+		"../../etc/passwd",
+		"backup-20260101-120000.123456789.db/../../vec.db",
+		"notabackup.db",
+		"backup-1.db",
+		"",
+	} {
+		if _, err := backupFilePath(dir, bad); err == nil {
+			t.Fatalf("expected %q to be rejected", bad)
+		}
+	}
+}
+
 func TestCheckpointTruncatesWAL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "checkpoint.db")
 	s, err := openVecDB(path)

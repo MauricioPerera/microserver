@@ -65,6 +65,20 @@ Esas credenciales solo importan la primera vez (siembran el admin inicial) — v
 
 Escucha en `:8080`. Crea/usa `vec.db` en el directorio actual. Corre en background: checkpoint del WAL cada 5 min, backup rotado (`backups/`, conserva 7) cada 1h. `Ctrl+C` hace un checkpoint y backup final antes de salir.
 
+### Backups: manual, listar, descargar, restore
+
+Además del backup automático cada 1h, `POST /admin/backup` dispara uno al toque (mismo `VACUUM INTO` + rotación) — útil antes de una operación riesgosa, sin esperar al próximo tick.
+
+**No hay endpoint de restore, a propósito.** Reemplazar el archivo de la base de datos en caliente, con el pool de conexiones abierto, no es seguro sin un cambio de arquitectura bastante más grande (indirección con puntero atómico + drenar requests en vuelo) — mucho riesgo para lo que gana. El restore es un procedimiento manual, offline:
+
+```bash
+# 1. Parar el proceso (Ctrl+C o el servicio de systemd)
+# 2. Descargar/copiar el backup elegido sobre vec.db
+curl http://localhost:8080/admin/backups/backup-20260802-120000.123456789.db -H "Authorization: Bearer $TOKEN" -o vec.db
+rm -f vec.db-wal vec.db-shm   # son relativos al vec.db viejo, no al restaurado
+# 3. Volver a arrancar el proceso
+```
+
 ## Build
 
 Las dependencias están vendorizadas (`vendor/`), así que `go build`/`go test` no necesitan red ni tocar el module cache — Go usa `vendor/` automáticamente si el directorio existe.
@@ -234,6 +248,9 @@ Toda respuesta se comprime con gzip automáticamente si el cliente manda `Accept
 | GET | `/health` | público | Chequeo de salud. |
 | GET | `/metrics` | público | Métricas Prometheus. |
 | POST | `/login` | público | Login, devuelve token. |
+| POST | `/admin/backup` | admin | Disparar un backup inmediato. |
+| GET | `/admin/backups` | admin | Listar backups existentes. |
+| GET | `/admin/backups/{name}` | admin | Descargar un backup. |
 | POST | `/users` | admin | Crear usuario. |
 | GET | `/users` | admin | Listar usuarios (sin hash). |
 | DELETE | `/users/{username}` | admin | Borrar usuario (protege al último admin). |
@@ -367,6 +384,35 @@ Cambia la propia contraseña (no la de otro — el usuario objetivo sale del tok
 
 ```bash
 curl -X PUT http://localhost:8080/users/me/password -H "Authorization: Bearer $TOKEN" -d '{"current_password":"unabuenacontrasena","new_password":"otracontrasenamejor"}'
+```
+
+### `POST /admin/backup` — requiere rol admin
+
+Dispara un backup inmediato (mismo `VACUUM INTO` + rotación que el automático cada 1h).
+
+**Respuesta:** `201 Created`
+```json
+{"name": "backup-20260802-120000.123456789.db", "size_bytes": 69632, "created_at": "2026-08-02T12:00:00Z"}
+```
+
+```bash
+curl -X POST http://localhost:8080/admin/backup -H "Authorization: Bearer $TOKEN"
+```
+
+### `GET /admin/backups` — requiere rol admin
+
+Lista los backups existentes, más nuevo primero.
+
+```bash
+curl http://localhost:8080/admin/backups -H "Authorization: Bearer $TOKEN"
+```
+
+### `GET /admin/backups/{name}` — requiere rol admin
+
+Descarga un backup (`application/octet-stream`). `name` se valida contra el patrón exacto que genera el servidor (`backup-<fecha>-<hora>.<nanos>.db`) — cualquier otra cosa, incluidos intentos de path traversal, da `400` antes de tocar el filesystem. `404` si no existe. No hay endpoint de restore — ver sección "Backups: manual, listar, descargar, restore" más arriba.
+
+```bash
+curl http://localhost:8080/admin/backups/backup-20260802-120000.123456789.db -H "Authorization: Bearer $TOKEN" -o backup.db
 ```
 
 ### `POST /items` — requiere rol admin

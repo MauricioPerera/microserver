@@ -24,6 +24,8 @@ tags:
     description: Colecciones dinámicas (con o sin vector), CRUD, filtro, orden, agregación, full-text.
   - name: ops
     description: Salud y métricas.
+  - name: admin
+    description: Backups (manual, listar, descargar). No hay restore vía API — ver descripción de GET /admin/backups/{name}.
 
 paths:
   /health:
@@ -89,6 +91,83 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "429":
           description: Demasiados intentos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/backup:
+    post:
+      tags: [admin]
+      summary: Disparar un backup inmediato
+      operationId: triggerBackup
+      description: Requiere rol admin. Mismo VACUUM INTO + rotación que el backup automático cada 1h.
+      responses:
+        "201":
+          description: Backup creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupInfo" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/backups:
+    get:
+      tags: [admin]
+      summary: Listar backups
+      operationId: listBackups
+      description: Requiere rol admin. Más nuevo primero.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BackupInfo" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/backups/{name}:
+    get:
+      tags: [admin]
+      summary: Descargar un backup
+      operationId: downloadBackup
+      description: >
+        Requiere rol admin. name se valida contra el patrón exacto que
+        genera el servidor — cualquier otra cosa (incluidos intentos de
+        path traversal) da 400 antes de tocar el filesystem. No hay
+        endpoint de restore: reemplazar la base de datos en caliente no es
+        seguro sin un cambio de arquitectura mayor — es un procedimiento
+        manual offline (ver README).
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: '^backup-\d{8}-\d{6}\.\d{9}\.db$' }
+      responses:
+        "200":
+          description: Contenido del backup
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "400":
+          description: Nombre inválido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No existe
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -876,6 +955,14 @@ components:
       properties:
         error: { type: string }
       required: [error]
+
+    BackupInfo:
+      type: object
+      properties:
+        name: { type: string }
+        size_bytes: { type: integer }
+        created_at: { type: string, format: date-time }
+      required: [name, size_bytes, created_at]
 
     HealthResponse:
       type: object

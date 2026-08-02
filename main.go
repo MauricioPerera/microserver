@@ -13,8 +13,6 @@ import (
 const (
 	checkpointInterval = 5 * time.Minute
 	backupInterval     = 1 * time.Hour
-	backupDir          = "backups"
-	backupKeep         = 7
 	defaultHTTPAddr    = "127.0.0.1:8080"
 
 	// generalRateLimit applies to every request (except /login, which has
@@ -25,6 +23,16 @@ const (
 	generalRateLimitPerSecond = 20
 	generalRateLimitBurst     = 40
 	rateLimiterPruneInterval  = 10 * time.Minute
+)
+
+// backupDir and backupKeep are vars, not consts, so tests exercising the
+// admin backup HTTP handlers (handleTriggerBackup, handleListBackups,
+// handleDownloadBackup — see http_admin.go) can redirect them to a temp
+// directory instead of writing real backup files into the working
+// directory that `go test` runs in.
+var (
+	backupDir  = "backups"
+	backupKeep = 7
 )
 
 func main() {

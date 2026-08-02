@@ -7,6 +7,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Todo esto está en `master`, sin cortar como release todavía.
 
 ### Added
+- Backup manual y descarga vía API: `POST /admin/backup`, `GET /admin/backups`, `GET /admin/backups/{name}`. Restore queda como procedimiento manual documentado (parar el proceso, copiar el archivo sobre `vec.db`, reiniciar) — reemplazar la DB en caliente con el pool de conexiones abierto no es seguro sin un refactor de arquitectura mayor.
 - Compresión gzip de respuestas cuando el cliente manda `Accept-Encoding: gzip` — transparente, aplica a todos los endpoints salvo `204 No Content` (que no llevan cuerpo).
 - `GET /health` ahora chequea de verdad: pinguea la DB y hace un `GET /api/tags` liviano a Ollama (timeout 3s cada uno). `200` solo si ambos están bien, `503` con el detalle en `checks` si no.
 - `PUT /collections/{name}/rename` — cambia el nombre lógico de una colección; datos, vectores, índice full-text y referencias (propias y entrantes) quedan intactos.

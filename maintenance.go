@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -88,6 +89,56 @@ func pruneBackups(dir string, keep int) error {
 		}
 	}
 	return nil
+}
+
+// backupNameRe matches exactly the filename shape BackupRotate generates.
+// This is the entire injection/path-traversal defense for the download
+// endpoint: a name that doesn't match this is rejected before it's ever
+// joined with a directory path.
+var backupNameRe = regexp.MustCompile(`^backup-\d{8}-\d{6}\.\d{9}\.db$`)
+
+// BackupInfo describes one backup file on disk.
+type BackupInfo struct {
+	Name      string    `json:"name"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// listBackupFiles returns backup files in dir, newest first. An absent dir
+// (no backup has run yet) is not an error — just an empty list.
+func listBackupFiles(dir string) ([]BackupInfo, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []BackupInfo{}, nil
+		}
+		return nil, fmt.Errorf("reading backup dir: %w", err)
+	}
+
+	backups := []BackupInfo{}
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasPrefix(n, backupPrefix) || !strings.HasSuffix(n, backupSuffix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			return nil, fmt.Errorf("stat-ing backup %s: %w", n, err)
+		}
+		backups = append(backups, BackupInfo{Name: n, SizeBytes: info.Size(), CreatedAt: info.ModTime()})
+	}
+	sort.Slice(backups, func(i, j int) bool { return backups[i].Name > backups[j].Name })
+	return backups, nil
+}
+
+// backupFilePath validates name against backupNameRe and returns its path
+// within dir. Rejects anything else, including path traversal attempts,
+// before it ever reaches the filesystem.
+func backupFilePath(dir, name string) (string, error) {
+	if !backupNameRe.MatchString(name) {
+		return "", fmt.Errorf("invalid backup name")
+	}
+	return filepath.Join(dir, name), nil
 }
 
 // StartBackupLoop runs BackupRotate on a fixed interval until stop is
