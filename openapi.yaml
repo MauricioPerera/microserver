@@ -191,6 +191,38 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /users/{username}/password:
+    put:
+      tags: [auth]
+      summary: Resetear la contraseña de otro usuario
+      operationId: resetPassword
+      description: Requiere rol admin. No necesita conocer la contraseña actual — salida para cuentas bloqueadas.
+      parameters:
+        - $ref: "#/components/parameters/Username"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResetPasswordRequest" }
+      responses:
+        "204":
+          description: Contraseña reseteada
+        "400":
+          description: Contraseña nueva demasiado corta (mínimo 8 caracteres)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Usuario no encontrado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /items:
     get:
       tags: [items]
@@ -791,6 +823,12 @@ components:
         current_password: { type: string }
         new_password: { type: string, minLength: 8 }
       required: [current_password, new_password]
+
+    ResetPasswordRequest:
+      type: object
+      properties:
+        new_password: { type: string, minLength: 8 }
+      required: [new_password]
 
     CreateUserRequest:
       type: object

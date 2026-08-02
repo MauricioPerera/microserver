@@ -85,6 +85,7 @@ func newRouter(store *VecStore, auth AuthConfig) http.Handler {
 	mux.Handle("POST /users", admin(handleCreateUser(store)))
 	mux.Handle("GET /users", admin(handleListUsers(store)))
 	mux.Handle("DELETE /users/{username}", admin(handleDeleteUser(store)))
+	mux.Handle("PUT /users/{username}/password", admin(handleResetPassword(store)))
 	return mux
 }
 

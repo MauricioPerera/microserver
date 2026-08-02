@@ -234,6 +234,7 @@ Spec completa en [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0) — importable en 
 | POST | `/users` | admin | Crear usuario. |
 | GET | `/users` | admin | Listar usuarios (sin hash). |
 | DELETE | `/users/{username}` | admin | Borrar usuario (protege al último admin). |
+| PUT | `/users/{username}/password` | admin | Resetear la contraseña de otro usuario. |
 | PUT | `/users/me/password` | cualquiera | Cambiar la propia contraseña. |
 | POST | `/items` | admin | Insertar en la tabla fija `vec_items`. |
 | POST | `/items/bulk` | admin | Insertar varios items en `vec_items` (todo-o-nada, máx. 100). |
@@ -328,6 +329,21 @@ Borra un usuario. `204`/`404`. Rechaza borrar el último admin que queda (`409`)
 
 ```bash
 curl -X DELETE http://localhost:8080/users/lector -H "Authorization: Bearer $TOKEN"
+```
+
+### `PUT /users/{username}/password` — requiere rol admin
+
+Resetea la contraseña de otro usuario, sin necesidad de conocer la actual — la salida para un usuario que quedó bloqueado sin acceso.
+
+**Body:**
+```json
+{"new_password": "otracontrasenamejor"}
+```
+
+**Respuesta:** `204 No Content`. `404` si el usuario no existe, `400` si la contraseña nueva tiene menos de 8 caracteres.
+
+```bash
+curl -X PUT http://localhost:8080/users/lector/password -H "Authorization: Bearer $TOKEN" -d '{"new_password":"otracontrasenamejor"}'
 ```
 
 ### `PUT /users/me/password` — cualquier usuario autenticado

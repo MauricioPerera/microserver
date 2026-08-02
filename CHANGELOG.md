@@ -7,6 +7,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Todo esto está en `master`, sin cortar como release todavía.
 
 ### Added
+- `PUT /users/{username}/password` — admin resetea la contraseña de otro usuario sin conocer la actual (salida para cuentas bloqueadas).
 - [`openapi.yaml`](openapi.yaml): spec OpenAPI 3.0 completa de todos los endpoints (validada con Redocly CLI).
 - Bulk insert: `POST /items/bulk` y `POST /collections/{name}/items/bulk`, todo-o-nada (una sola transacción, sin resultados parciales), máximo 100 items por request.
 - `PUT /users/me/password` — cualquier usuario autenticado cambia su propia contraseña (requiere la actual). No hay endpoint admin para resetear la contraseña de otro; solo borrar y recrear el usuario.

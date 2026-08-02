@@ -179,6 +179,58 @@ func TestHTTPChangeOwnPassword(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestHTTPAdminResetsAnotherUsersPassword(t *testing.T) {
+	store, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer store.Close()
+
+	server := httptest.NewServer(newRouter(store, testAuth()))
+	defer server.Close()
+
+	body, _ := json.Marshal(createUserRequest{Username: "reader", Password: "readerpw1", Role: RoleReadOnly})
+	resp := doAuthed(t, http.MethodPost, server.URL+"/users", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /users status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// too-short new password -> 400
+	body, _ = json.Marshal(resetPasswordRequest{NewPassword: "short"})
+	resp = doAuthed(t, http.MethodPut, server.URL+"/users/reader/password", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for too-short password, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// unknown user -> 404
+	resp = doAuthed(t, http.MethodPut, server.URL+"/users/nosuchuser/password", body)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown user, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// admin resets reader's password without knowing it -> 204
+	body, _ = json.Marshal(resetPasswordRequest{NewPassword: "resetbyadmin1"})
+	resp = doAuthed(t, http.MethodPut, server.URL+"/users/reader/password", body)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// reader can now log in with the reset password
+	loginBody, _ := json.Marshal(loginRequest{Username: "reader", Password: "resetbyadmin1"})
+	resp, err = http.Post(server.URL+"/login", "application/json", bytes.NewReader(loginBody))
+	if err != nil {
+		t.Fatalf("POST /login with reset password: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected login with reset password to succeed, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
 func TestHTTPCreateUserValidationErrors(t *testing.T) {
 	store, err := openVecDB(":memory:")
 	if err != nil {

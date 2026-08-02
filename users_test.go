@@ -201,6 +201,40 @@ func TestChangePassword(t *testing.T) {
 	}
 }
 
+func TestResetPassword(t *testing.T) {
+	s, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer s.Close()
+
+	if err := createUser(s, "alice", "originalpw", RoleReadOnly); err != nil {
+		t.Fatalf("createUser: %v", err)
+	}
+
+	if err := resetPassword(s, "nosuchuser", "newpassword1"); err != ErrUserNotFound {
+		t.Fatalf("expected ErrUserNotFound, got %v", err)
+	}
+	if err := resetPassword(s, "alice", "short"); err != ErrPasswordTooShort {
+		t.Fatalf("expected ErrPasswordTooShort, got %v", err)
+	}
+	// no knowledge of the current password required
+	if err := resetPassword(s, "alice", "resetpassword1"); err != nil {
+		t.Fatalf("resetPassword: %v", err)
+	}
+
+	u, err := getUser(s, "alice")
+	if err != nil {
+		t.Fatalf("getUser: %v", err)
+	}
+	if checkPassword(u, "originalpw") {
+		t.Fatal("old password should no longer work")
+	}
+	if !checkPassword(u, "resetpassword1") {
+		t.Fatal("reset password should work")
+	}
+}
+
 func TestListUsersExcludesPasswordHash(t *testing.T) {
 	s, err := openVecDB(":memory:")
 	if err != nil {

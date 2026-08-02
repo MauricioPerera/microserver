@@ -168,24 +168,14 @@ func deleteUser(s *VecStore, username string) (bool, error) {
 	return n > 0, nil
 }
 
-// changePassword verifies currentPassword against the stored hash and, if
-// it matches, replaces it with a bcrypt hash of newPassword. This is the
-// only self-service credential path — admins can create/delete users but
-// there's no admin "reset someone else's password" endpoint, so a user
-// locked out of their own password needs an admin to delete and recreate
-// their account.
-func changePassword(s *VecStore, username, currentPassword, newPassword string) error {
-	u, err := getUser(s, username)
-	if err != nil {
-		return err
-	}
-	if !checkPassword(u, currentPassword) {
-		return ErrWrongPassword
-	}
+// setPasswordHash validates newPassword's length and overwrites username's
+// stored hash. Shared by changePassword (after verifying the current
+// password) and resetPassword (admin bypass, no current-password check) —
+// the only difference between the two is what's checked before this runs.
+func setPasswordHash(s *VecStore, username, newPassword string) error {
 	if len(newPassword) < minPasswordLength {
 		return ErrPasswordTooShort
 	}
-
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
@@ -196,6 +186,31 @@ func changePassword(s *VecStore, username, currentPassword, newPassword string) 
 		return fmt.Errorf("updating password: %w", err)
 	}
 	return nil
+}
+
+// changePassword verifies currentPassword against the stored hash and, if
+// it matches, replaces it with a bcrypt hash of newPassword. This is the
+// self-service credential path, available to any user for their own
+// account.
+func changePassword(s *VecStore, username, currentPassword, newPassword string) error {
+	u, err := getUser(s, username)
+	if err != nil {
+		return err
+	}
+	if !checkPassword(u, currentPassword) {
+		return ErrWrongPassword
+	}
+	return setPasswordHash(s, username, newPassword)
+}
+
+// resetPassword sets a new password for username without checking the old
+// one — the admin escape hatch for a user who's locked out and can't use
+// changePassword themselves.
+func resetPassword(s *VecStore, username, newPassword string) error {
+	if _, err := getUser(s, username); err != nil {
+		return err
+	}
+	return setPasswordHash(s, username, newPassword)
 }
 
 // countUsers reports how many users exist, for bootstrap decisions.

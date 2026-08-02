@@ -81,6 +81,37 @@ func handleChangePassword(store *VecStore) http.HandlerFunc {
 	}
 }
 
+type resetPasswordRequest struct {
+	NewPassword string `json:"new_password"`
+}
+
+// handleResetPassword: PUT /users/{username}/password. Admin-only — sets a
+// new password for another user without requiring their old one, for a
+// user who's locked out and can't use PUT /users/me/password themselves.
+func handleResetPassword(store *VecStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		username := r.PathValue("username")
+
+		var req resetPasswordRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+
+		if err := resetPassword(store, username, req.NewPassword); err != nil {
+			switch {
+			case errors.Is(err, ErrUserNotFound):
+				writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrPasswordTooShort):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // handleDeleteUser: DELETE /users/{username}. Admin-only. Refuses to
 // remove the last admin (409) — there's no recovery path if that happens.
 func handleDeleteUser(store *VecStore) http.HandlerFunc {
