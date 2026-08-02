@@ -38,6 +38,123 @@ func TestCreateAndDropCollection(t *testing.T) {
 	}
 }
 
+func TestRenameCollection(t *testing.T) {
+	s, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer s.Close()
+
+	if err := createCollection(s, "notas", false, 0, nil); err != nil {
+		t.Fatalf("createCollection: %v", err)
+	}
+	notasColl, err := getCollection(s, "notas")
+	if err != nil {
+		t.Fatalf("getCollection(notas): %v", err)
+	}
+	if _, err := insertDocument(s, notasColl, nil, "", json.RawMessage(`{"titulo":"compras"}`)); err != nil {
+		t.Fatalf("insertDocument: %v", err)
+	}
+
+	if err := renameCollection(s, "notas", "apuntes"); err != nil {
+		t.Fatalf("renameCollection: %v", err)
+	}
+
+	if _, err := getCollection(s, "notas"); err != ErrCollectionNotFound {
+		t.Fatalf("expected old name to be gone, got %v", err)
+	}
+	coll, err := getCollection(s, "apuntes")
+	if err != nil {
+		t.Fatalf("getCollection(apuntes): %v", err)
+	}
+
+	docs, err := listDocuments(s, coll, 10, 0, nil, nil)
+	if err != nil {
+		t.Fatalf("listDocuments: %v", err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("expected the document to survive the rename, got %d docs", len(docs))
+	}
+}
+
+func TestRenameCollectionValidation(t *testing.T) {
+	s, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer s.Close()
+
+	if err := createCollection(s, "notas", false, 0, nil); err != nil {
+		t.Fatalf("createCollection: %v", err)
+	}
+	if err := createCollection(s, "recetas", false, 0, nil); err != nil {
+		t.Fatalf("createCollection: %v", err)
+	}
+
+	if err := renameCollection(s, "nosuchcollection", "algo"); err != ErrCollectionNotFound {
+		t.Fatalf("expected ErrCollectionNotFound, got %v", err)
+	}
+	if err := renameCollection(s, "notas", "bad name"); err != ErrInvalidCollectionName {
+		t.Fatalf("expected ErrInvalidCollectionName, got %v", err)
+	}
+	if err := renameCollection(s, "notas", "recetas"); err != ErrCollectionExists {
+		t.Fatalf("expected ErrCollectionExists, got %v", err)
+	}
+
+	// still there under its original name after all the rejected attempts
+	if _, err := getCollection(s, "notas"); err != nil {
+		t.Fatalf("expected notas to be unaffected by rejected renames: %v", err)
+	}
+}
+
+func TestRenameCollectionCascadesReferences(t *testing.T) {
+	s, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer s.Close()
+
+	if err := createCollection(s, "autores", false, 0, nil); err != nil {
+		t.Fatalf("createCollection(autores): %v", err)
+	}
+	if err := createCollection(s, "posts", false, 0, map[string]ReferenceSpec{
+		"autor_id": {Collection: "autores"},
+	}); err != nil {
+		t.Fatalf("createCollection(posts): %v", err)
+	}
+
+	if err := renameCollection(s, "autores", "escritores"); err != nil {
+		t.Fatalf("renameCollection: %v", err)
+	}
+
+	refs, err := getReferences(s, "posts")
+	if err != nil {
+		t.Fatalf("getReferences: %v", err)
+	}
+	if len(refs) != 1 || refs[0].Collection != "escritores" {
+		t.Fatalf("expected posts' reference to now point at escritores, got %+v", refs)
+	}
+
+	// the reference still resolves correctly post-rename: inserting a post
+	// that points at a real id in the renamed collection should validate.
+	escritoresColl, err := getCollection(s, "escritores")
+	if err != nil {
+		t.Fatalf("getCollection(escritores): %v", err)
+	}
+	autorID, err := insertDocument(s, escritoresColl, nil, "", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("insertDocument(escritores): %v", err)
+	}
+	postsColl, err := getCollection(s, "posts")
+	if err != nil {
+		t.Fatalf("getCollection(posts): %v", err)
+	}
+	postData, _ := json.Marshal(map[string]int64{"autor_id": autorID})
+	if _, err := insertDocument(s, postsColl, nil, "", postData); err != nil {
+		t.Fatalf("insertDocument(posts) with post-rename reference: %v", err)
+	}
+}
+
 func TestCollectionNameValidation(t *testing.T) {
 	s, err := openVecDB(":memory:")
 	if err != nil {

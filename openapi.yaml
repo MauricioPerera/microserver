@@ -452,6 +452,49 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /collections/{name}/rename:
+    put:
+      tags: [collections]
+      summary: Cambiar el nombre de una colección
+      operationId: renameCollection
+      description: >
+        Requiere rol admin. Solo cambia el nombre lógico — items, vectores,
+        índice full-text y referencias (propias y entrantes de otras
+        colecciones) quedan intactos, actualizados al nuevo nombre.
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RenameCollectionRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Collection" }
+        "400":
+          description: Falta name, o el nombre nuevo es inválido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Colección no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Ya existe una colección con el nombre nuevo
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /collections/{name}/items:
     post:
       tags: [collections]
@@ -937,6 +980,14 @@ components:
         has_vector: { type: boolean }
         dimensions: { type: integer }
       required: [name, has_vector]
+
+    RenameCollectionRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          pattern: "^[a-zA-Z][a-zA-Z0-9_]{0,62}$"
+      required: [name]
 
     DocumentRequest:
       type: object

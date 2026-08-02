@@ -71,6 +71,7 @@ func newRouter(store *VecStore, auth AuthConfig) http.Handler {
 	mux.Handle("POST /collections", admin(handleCreateCollection(store)))
 	mux.Handle("GET /collections", authOnly(handleListCollections(store)))
 	mux.Handle("DELETE /collections/{name}", admin(handleDropCollection(store)))
+	mux.Handle("PUT /collections/{name}/rename", admin(handleRenameCollection(store)))
 	mux.Handle("POST /collections/{name}/items", admin(handleInsertDocument(store)))
 	mux.Handle("POST /collections/{name}/items/bulk", admin(handleBulkInsertDocument(store)))
 	mux.Handle("GET /collections/{name}/items", authOnly(handleListDocuments(store)))

@@ -70,6 +70,49 @@ func handleDropCollection(store *VecStore) http.HandlerFunc {
 	}
 }
 
+type renameCollectionRequest struct {
+	Name string `json:"name"`
+}
+
+// handleRenameCollection: PUT /collections/{name}/rename {"name":"nuevo_nombre"}
+// Only the logical name changes — the collection keeps its data, vectors,
+// references, and full-text index untouched.
+func handleRenameCollection(store *VecStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		oldName := r.PathValue("name")
+
+		var req renameCollectionRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if req.Name == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+
+		if err := renameCollection(store, oldName, req.Name); err != nil {
+			switch {
+			case errors.Is(err, ErrCollectionNotFound):
+				writeError(w, http.StatusNotFound, "collection not found")
+			case errors.Is(err, ErrCollectionExists):
+				writeError(w, http.StatusConflict, err.Error())
+			case errors.Is(err, ErrInvalidCollectionName):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+
+		coll, err := getCollection(store, req.Name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, coll)
+	}
+}
+
 type documentRequest struct {
 	ID   *int64          `json:"id,omitempty"`
 	Text string          `json:"text,omitempty"`

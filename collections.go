@@ -471,6 +471,54 @@ func dropCollection(s *VecStore, name string) error {
 	return tx.Commit()
 }
 
+// renameCollection changes a collection's logical name, cascading the
+// rename into collection_references (both its own declared references and
+// any other collection's reference pointing at it). The backing SQL table
+// (table_name, e.g. "coll_oldname") is deliberately left untouched — it's
+// an internal storage detail, never exposed via the API (Collection.tableName
+// is unexported), so there's no vec0/FTS5 table-rename hazard to worry
+// about and nothing else needs to change to stay consistent.
+func renameCollection(s *VecStore, oldName, newName string) error {
+	if !collectionNameRe.MatchString(newName) {
+		return ErrInvalidCollectionName
+	}
+
+	tx, err := s.write.Begin()
+	if err != nil {
+		return fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRow(`SELECT count(*) FROM collections WHERE name = ?`, oldName).Scan(&exists); err != nil {
+		return fmt.Errorf("checking existing collection: %w", err)
+	}
+	if exists == 0 {
+		return ErrCollectionNotFound
+	}
+	if oldName != newName {
+		var conflict int
+		if err := tx.QueryRow(`SELECT count(*) FROM collections WHERE name = ?`, newName).Scan(&conflict); err != nil {
+			return fmt.Errorf("checking new name availability: %w", err)
+		}
+		if conflict > 0 {
+			return ErrCollectionExists
+		}
+	}
+
+	if _, err := tx.Exec(`UPDATE collections SET name = ? WHERE name = ?`, newName, oldName); err != nil {
+		return fmt.Errorf("renaming collection: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE collection_references SET collection_name = ? WHERE collection_name = ?`, newName, oldName); err != nil {
+		return fmt.Errorf("updating owned references: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE collection_references SET target_collection = ? WHERE target_collection = ?`, newName, oldName); err != nil {
+		return fmt.Errorf("updating incoming references: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // Document is an item in a collection. Text is only meaningful for vector
 // collections (it's what got embedded); Data is arbitrary JSON metadata,
 // present in both vector and non-vector collections.

@@ -246,6 +246,7 @@ Spec completa en [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0) — importable en 
 | POST | `/collections` | admin | Crear una colección (con o sin vector, con referencias opcionales). |
 | GET | `/collections` | cualquiera | Listar colecciones. |
 | DELETE | `/collections/{name}` | admin | Borrar una colección entera. |
+| PUT | `/collections/{name}/rename` | admin | Cambiar el nombre de una colección. |
 | POST | `/collections/{name}/items` | admin | Insertar un item en una colección. |
 | POST | `/collections/{name}/items/bulk` | admin | Insertar varios items en una colección (todo-o-nada, máx. 100). |
 | GET | `/collections/{name}/items` | cualquiera | Listar items — con filtro y orden opcionales. |
@@ -531,6 +532,21 @@ Borra la colección y todos sus items. `204` si se borró, `404` si no existía.
 
 ```bash
 curl -X DELETE http://localhost:8080/collections/documentos -H "Authorization: Bearer $TOKEN"
+```
+
+### `PUT /collections/{name}/rename` — requiere rol admin
+
+Cambia el nombre de una colección. Solo cambia el nombre lógico — los items, vectores, índice full-text y referencias (propias y las de otras colecciones que apunten a esta) quedan intactos, actualizados al nuevo nombre.
+
+**Body:**
+```json
+{"name": "nuevo_nombre"}
+```
+
+**Respuesta:** `200 OK` con la colección actualizada. `404` si no existe, `409` si ya hay otra con el nombre nuevo, `400` si el nombre nuevo es inválido.
+
+```bash
+curl -X PUT http://localhost:8080/collections/notas/rename -H "Authorization: Bearer $TOKEN" -d '{"name":"apuntes"}'
 ```
 
 ### `POST /collections/{name}/items` — requiere rol admin

@@ -330,6 +330,81 @@ func TestHTTPExportPaginatesInternallyPastOnePage(t *testing.T) {
 	}
 }
 
+func TestHTTPRenameCollection(t *testing.T) {
+	store, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer store.Close()
+
+	server := httptest.NewServer(newRouter(store, testAuth()))
+	defer server.Close()
+
+	body, _ := json.Marshal(createCollectionRequest{Name: "notas", Vector: false})
+	resp := doAuthed(t, http.MethodPost, server.URL+"/collections", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /collections status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	docBody, _ := json.Marshal(documentRequest{Data: json.RawMessage(`{"titulo":"compras"}`)})
+	resp = doAuthed(t, http.MethodPost, server.URL+"/collections/notas/items", docBody)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /collections/notas/items status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// rename to an already-used name -> 409
+	body, _ = json.Marshal(createCollectionRequest{Name: "otra", Vector: false})
+	resp = doAuthed(t, http.MethodPost, server.URL+"/collections", body)
+	resp.Body.Close()
+	renameBody, _ := json.Marshal(renameCollectionRequest{Name: "otra"})
+	resp = doAuthed(t, http.MethodPut, server.URL+"/collections/notas/rename", renameBody)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 renaming to an existing name, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// unknown collection -> 404
+	renameBody, _ = json.Marshal(renameCollectionRequest{Name: "nuevo"})
+	resp = doAuthed(t, http.MethodPut, server.URL+"/collections/nosuchcollection/rename", renameBody)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown collection, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// successful rename
+	resp = doAuthed(t, http.MethodPut, server.URL+"/collections/notas/rename", renameBody)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT /collections/notas/rename status=%d", resp.StatusCode)
+	}
+	var renamed Collection
+	json.NewDecoder(resp.Body).Decode(&renamed)
+	resp.Body.Close()
+	if renamed.Name != "nuevo" {
+		t.Fatalf("expected renamed collection name %q, got %q", "nuevo", renamed.Name)
+	}
+
+	// old name is gone
+	resp = doAuthed(t, http.MethodGet, server.URL+"/collections/notas/items", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 under the old name, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// data survived under the new name
+	resp = doAuthed(t, http.MethodGet, server.URL+"/collections/nuevo/items", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /collections/nuevo/items status=%d", resp.StatusCode)
+	}
+	var docs []Document
+	json.NewDecoder(resp.Body).Decode(&docs)
+	resp.Body.Close()
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 document to survive the rename, got %d", len(docs))
+	}
+}
+
 func TestHTTPCollectionInjectionAttemptRejected(t *testing.T) {
 	store, err := openVecDB(":memory:")
 	if err != nil {
