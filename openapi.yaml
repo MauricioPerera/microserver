@@ -1,0 +1,913 @@
+openapi: 3.0.3
+info:
+  title: microserver
+  description: >
+    Servidor HTTP en Go sobre SQLite (sqlite-vec) con embeddinggemma (Ollama)
+    para embeddings: búsqueda semántica, colecciones dinámicas con JSON libre,
+    filtrado/orden/agregación/full-text, y multi-usuario con roles.
+    Ver README.md para instalación, despliegue y detalles de arquitectura.
+  version: "0.1.0"
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8080
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: auth
+    description: Login y gestión de usuarios/roles.
+  - name: items
+    description: Tabla fija vec_items — búsqueda semántica simple.
+  - name: collections
+    description: Colecciones dinámicas (con o sin vector), CRUD, filtro, orden, agregación, full-text.
+  - name: ops
+    description: Salud y métricas.
+
+paths:
+  /health:
+    get:
+      tags: [ops]
+      summary: Chequeo de salud
+      operationId: health
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /metrics:
+    get:
+      tags: [ops]
+      summary: Métricas Prometheus
+      operationId: metrics
+      description: Formato de texto de exposición de Prometheus. Público, no requiere token.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /login:
+    post:
+      tags: [auth]
+      summary: Login
+      operationId: login
+      description: >
+        Autentica contra la tabla de usuarios y devuelve un token firmado
+        (HMAC) que incluye el rol del usuario, válido por 1 hora.
+        Sujeto a rate limit por IP (5 intentos/min).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Login exitoso
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "401":
+          description: Credenciales inválidas
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Demasiados intentos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /users/me/password:
+    put:
+      tags: [auth]
+      summary: Cambiar la propia contraseña
+      operationId: changePassword
+      description: Cualquier usuario autenticado. El usuario objetivo sale del token, nunca de la URL.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChangePasswordRequest" }
+      responses:
+        "204":
+          description: Contraseña cambiada
+        "400":
+          description: Contraseña nueva demasiado corta (mínimo 8 caracteres)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: current_password incorrecta, o token ausente/inválido/expirado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /users:
+    post:
+      tags: [auth]
+      summary: Crear usuario
+      operationId: createUser
+      description: Requiere rol admin.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201":
+          description: Usuario creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserInfo" }
+        "400":
+          description: Username/rol inválido, o contraseña muy corta
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: El usuario ya existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [auth]
+      summary: Listar usuarios
+      operationId: listUsers
+      description: Requiere rol admin. Nunca incluye el hash de contraseña.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/UserInfo" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /users/{username}:
+    delete:
+      tags: [auth]
+      summary: Borrar usuario
+      operationId: deleteUser
+      description: Requiere rol admin. Rechaza borrar el último admin que queda.
+      parameters:
+        - $ref: "#/components/parameters/Username"
+      responses:
+        "204":
+          description: Usuario borrado
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Usuario no encontrado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Es el último admin, no se puede borrar
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /items:
+    get:
+      tags: [items]
+      summary: Listar items
+      operationId: listItems
+      description: Cualquier usuario autenticado.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Item" }
+    post:
+      tags: [items]
+      summary: Insertar un item
+      operationId: insertItem
+      description: Requiere rol admin. Genera el embedding (embeddinggemma, 768 dims), guardado en float32 + binario cuantizado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InsertRequest" }
+      responses:
+        "201":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InsertResponse" }
+        "400":
+          description: Falta text, o JSON inválido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /items/bulk:
+    post:
+      tags: [items]
+      summary: Insertar varios items
+      operationId: bulkInsertItems
+      description: >
+        Requiere rol admin. Todo-o-nada: si un item falla, no se inserta
+        ninguno del lote. Máximo 100 items por request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: "#/components/schemas/InsertRequest" }
+      responses:
+        "201":
+          description: Creados, mismo orden que el request
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/InsertResponse" }
+        "400":
+          description: Lote vacío, supera 100 items, o algún item sin text
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /items/{id}:
+    put:
+      tags: [items]
+      summary: Reemplazar un item
+      operationId: updateItem
+      description: Requiere rol admin. Re-embebe el texto y reemplaza los vectores.
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InsertRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InsertResponse" }
+        "404":
+          description: No existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [items]
+      summary: Borrar un item
+      operationId: deleteItem
+      description: Requiere rol admin.
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+      responses:
+        "204":
+          description: Borrado
+        "404":
+          description: No existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /search:
+    get:
+      tags: [items]
+      summary: Búsqueda semántica en vec_items
+      operationId: searchItems
+      description: Cualquier usuario autenticado.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+          description: Texto a buscar (se embebe y se compara por distancia).
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1 }
+        - name: rerank
+          in: query
+          schema: { type: boolean, default: true }
+          description: "true = float32 exacto (default); false = binario, ~20x más rápido, ~5% menos preciso."
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SearchResult" }
+        "400":
+          description: Falta q
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /collections:
+    post:
+      tags: [collections]
+      summary: Crear una colección
+      operationId: createCollection
+      description: Requiere rol admin. dimensions es obligatorio (1..8192) cuando vector es true. Toda colección referenciada debe existir ya.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCollectionRequest" }
+      responses:
+        "201":
+          description: Creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Collection" }
+        "400":
+          description: Nombre inválido, dimensions inválido, o referencia a colección inexistente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Ya existe una colección con ese nombre
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [collections]
+      summary: Listar colecciones
+      operationId: listCollections
+      description: Cualquier usuario autenticado.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Collection" }
+
+  /collections/{name}:
+    delete:
+      tags: [collections]
+      summary: Borrar una colección entera
+      operationId: dropCollection
+      description: Requiere rol admin.
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+      responses:
+        "204":
+          description: Borrada
+        "404":
+          description: No existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /collections/{name}/items:
+    post:
+      tags: [collections]
+      summary: Insertar un item en una colección
+      operationId: insertDocument
+      description: Requiere rol admin. text es obligatorio solo si la colección tiene vector.
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentRequest" }
+      responses:
+        "201":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InsertResponse" }
+        "400":
+          description: Falta text en colección con vector, o referencia inválida
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Colección no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [collections]
+      summary: Listar items de una colección
+      operationId: listDocuments
+      description: >
+        Cualquier usuario autenticado. Cualquier query param no reservado
+        filtra por un campo de nivel superior de data: campo=valor (equals)
+        o campo__op=valor con op en eq, ne, lt, lte, gt, gte, like. Varios
+        params se combinan con AND.
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Sort"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Document" }
+        "404":
+          description: Colección no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /collections/{name}/items/bulk:
+    post:
+      tags: [collections]
+      summary: Insertar varios items en una colección
+      operationId: bulkInsertDocuments
+      description: >
+        Requiere rol admin. Mismo todo-o-nada que /items/bulk. Máximo 100
+        items por request.
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: "#/components/schemas/DocumentRequest" }
+      responses:
+        "201":
+          description: Creados, mismo orden que el request
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/InsertResponse" }
+        "400":
+          description: Lote vacío, supera 100 items, o algún item sin text (colecciones con vector)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Colección no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /collections/{name}/items/{id}:
+    get:
+      tags: [collections]
+      summary: Traer un item por id
+      operationId: getDocument
+      description: Cualquier usuario autenticado. Resuelve campos de referencia declarados en la colección.
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+        - $ref: "#/components/parameters/ItemId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Document" }
+        "404":
+          description: Colección o item no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      tags: [collections]
+      summary: Reemplazar un item
+      operationId: updateDocument
+      description: Requiere rol admin.
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+        - $ref: "#/components/parameters/ItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InsertResponse" }
+        "400":
+          description: Falta text en colección con vector, o referencia inválida
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Colección o item no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [collections]
+      summary: Borrar un item
+      operationId: deleteDocument
+      description: Requiere rol admin. Respeta referencias entrantes (restrict/set_null).
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+        - $ref: "#/components/parameters/ItemId"
+      responses:
+        "204":
+          description: Borrado
+        "403":
+          description: No es admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Colección o item no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Bloqueado por una referencia restrict
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /collections/{name}/search:
+    get:
+      tags: [collections]
+      summary: Búsqueda semántica en una colección con vector
+      operationId: searchDocuments
+      description: >
+        Cualquier usuario autenticado. Solo colecciones con vector. Acepta
+        los mismos filtros/orden que GET .../items, combinados con la
+        búsqueda semántica (best-effort, no exacto — ver README).
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1 }
+        - name: rerank
+          in: query
+          schema: { type: boolean, default: true }
+        - $ref: "#/components/parameters/Sort"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Document" }
+        "400":
+          description: Falta q, o la colección no tiene vector
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Colección no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /collections/{name}/aggregate:
+    get:
+      tags: [collections]
+      summary: Agregación sobre un campo de data
+      operationId: aggregateDocuments
+      description: >
+        Cualquier usuario autenticado. op es obligatorio (count, sum, avg,
+        min, max). field es obligatorio salvo para count sin field (cuenta
+        todas las filas). group_by es opcional. Acepta los mismos filtros
+        que GET .../items.
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+        - name: op
+          in: query
+          required: true
+          schema: { type: string, enum: [count, sum, avg, min, max] }
+        - name: field
+          in: query
+          schema: { type: string }
+        - name: group_by
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AggregateResult" }
+        "400":
+          description: op inválido, o falta field cuando es requerido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Colección no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /collections/{name}/fulltext:
+    get:
+      tags: [collections]
+      summary: Búsqueda de texto completo (FTS5) sobre el campo text
+      operationId: fullTextSearch
+      description: >
+        Cualquier usuario autenticado. Solo colecciones con vector (son las
+        únicas con campo text). q usa sintaxis FTS5 completa (AND/OR/NOT,
+        "frase exacta", prefijo*), ranking por bm25. Acepta los mismos
+        filtros/orden que GET .../items.
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Sort"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Document" }
+        "400":
+          description: Falta q, sintaxis FTS5 inválida, o la colección no tiene campo text
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Colección no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: >
+        Token HMAC stateless obtenido de POST /login (no es JWT estándar,
+        pero se usa igual: header Authorization: Bearer <token>).
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, default: 100, minimum: 1, maximum: 1000 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, default: 0, minimum: 0 }
+    Sort:
+      name: sort
+      in: query
+      schema: { type: string }
+      description: "Nombre de campo de data para ordenar. Prefijo - para descendente, ej. -precio."
+    ItemId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    Username:
+      name: username
+      in: path
+      required: true
+      schema: { type: string }
+    CollectionName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+      required: [error]
+
+    LoginRequest:
+      type: object
+      properties:
+        username: { type: string }
+        password: { type: string }
+      required: [username, password]
+
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string }
+        expires_in: { type: integer, description: "Segundos hasta la expiración." }
+      required: [token, expires_in]
+
+    ChangePasswordRequest:
+      type: object
+      properties:
+        current_password: { type: string }
+        new_password: { type: string, minLength: 8 }
+      required: [current_password, new_password]
+
+    CreateUserRequest:
+      type: object
+      properties:
+        username:
+          type: string
+          pattern: "^[a-zA-Z][a-zA-Z0-9_]{0,62}$"
+        password: { type: string, minLength: 8 }
+        role: { type: string, enum: [admin, read-only] }
+      required: [username, password, role]
+
+    UserInfo:
+      type: object
+      properties:
+        username: { type: string }
+        role: { type: string, enum: [admin, read-only] }
+      required: [username, role]
+
+    InsertRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Opcional. Si se omite o es 0, SQLite asigna uno.
+        text: { type: string }
+      required: [text]
+
+    InsertResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+      required: [id]
+
+    Item:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        text: { type: string }
+      required: [id, text]
+
+    SearchResult:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        text: { type: string }
+        distance:
+          type: number
+          description: Hamming (rerank=false) o L2 exacta (rerank=true) — no comparables entre sí.
+      required: [id, text, distance]
+
+    ReferenceSpec:
+      type: object
+      properties:
+        collection: { type: string }
+        on_delete: { type: string, enum: [restrict, set_null], default: restrict }
+      required: [collection]
+
+    CreateCollectionRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          pattern: "^[a-zA-Z][a-zA-Z0-9_]{0,62}$"
+        vector: { type: boolean, default: false }
+        dimensions:
+          type: integer
+          minimum: 1
+          maximum: 8192
+          description: Obligatorio si vector es true.
+        references:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/ReferenceSpec" }
+      required: [name]
+
+    Collection:
+      type: object
+      properties:
+        name: { type: string }
+        has_vector: { type: boolean }
+        dimensions: { type: integer }
+      required: [name, has_vector]
+
+    DocumentRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Opcional. Si se omite, SQLite asigna uno.
+        text:
+          type: string
+          description: Obligatorio solo si la colección tiene vector.
+        data:
+          type: object
+          description: JSON libre, cualquier forma.
+      description: Al menos uno de text/data debe tener contenido, según el tipo de colección.
+
+    Document:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        text: { type: string }
+        data: { type: object }
+        distance:
+          type: number
+          description: Solo presente en resultados de búsqueda semántica.
+      required: [id]
+
+    AggregateResult:
+      type: object
+      properties:
+        group:
+          type: string
+          nullable: true
+          description: Valor del campo group_by. Ausente si no se agrupó.
+        value:
+          type: number
+          nullable: true
+      required: [value]

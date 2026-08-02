@@ -7,6 +7,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Todo esto está en `master`, sin cortar como release todavía.
 
 ### Added
+- [`openapi.yaml`](openapi.yaml): spec OpenAPI 3.0 completa de todos los endpoints (validada con Redocly CLI).
 - Bulk insert: `POST /items/bulk` y `POST /collections/{name}/items/bulk`, todo-o-nada (una sola transacción, sin resultados parciales), máximo 100 items por request.
 - `PUT /users/me/password` — cualquier usuario autenticado cambia su propia contraseña (requiere la actual). No hay endpoint admin para resetear la contraseña de otro; solo borrar y recrear el usuario.
 - Multi-usuario con roles: tabla de usuarios (bcrypt), `admin` vs `read-only` parejo en toda la API. `POST/GET/DELETE /users` (admin-only), protección contra borrar el último admin. `AUTH_USERNAME`/`AUTH_PASSWORD` pasan a ser solo bootstrap del primer admin (una sola vez, tabla vacía), no la credencial permanente. Primera dependencia externa del proyecto (`golang.org/x/crypto/bcrypt`) — deliberada, hashear contraseñas a mano no es razonable.

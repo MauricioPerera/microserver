@@ -222,6 +222,8 @@ Todas las respuestas son JSON. Los cuerpos de request van sin encabezado `Conten
 
 `GET /health`, `GET /metrics` y `POST /login` son públicos. Todo lo demás requiere el header `Authorization: Bearer <token>` obtenido de `/login`. Los `GET` (lectura) valen para cualquier usuario autenticado; todo lo que escribe (`POST`/`PUT`/`DELETE`) y `/users` entero requieren rol `admin` — un `read-only` autenticado recibe `403`, no `401`.
 
+Spec completa en [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0) — importable en Postman/Insomnia o para generar clientes.
+
 ### Referencia rápida
 
 | Método | Ruta | Rol | Descripción |
