@@ -7,6 +7,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Todo esto está en `master`, sin cortar como release todavía.
 
 ### Added
+- Compresión gzip de respuestas cuando el cliente manda `Accept-Encoding: gzip` — transparente, aplica a todos los endpoints salvo `204 No Content` (que no llevan cuerpo).
 - `GET /health` ahora chequea de verdad: pinguea la DB y hace un `GET /api/tags` liviano a Ollama (timeout 3s cada uno). `200` solo si ambos están bien, `503` con el detalle en `checks` si no.
 - `PUT /collections/{name}/rename` — cambia el nombre lógico de una colección; datos, vectores, índice full-text y referencias (propias y entrantes) quedan intactos.
 - CORS opcional (`CORS_ALLOWED_ORIGINS`): sin setear, sin cambios (sin headers); `*` o lista separada por comas habilita orígenes específicos, con manejo de preflight `OPTIONS`.

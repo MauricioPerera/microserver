@@ -225,6 +225,8 @@ Todas las respuestas son JSON. Los cuerpos de request van sin encabezado `Conten
 
 Spec completa en [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0) — importable en Postman/Insomnia o para generar clientes.
 
+Toda respuesta se comprime con gzip automáticamente si el cliente manda `Accept-Encoding: gzip` (curl con `--compressed` lo hace solo). Transparente — no cambia forma ni contenido, solo lo comprime en tránsito. Las respuestas `204 No Content` (delete, cambios de password, etc.) nunca se marcan como gzip: no llevan cuerpo, así que no hay nada que comprimir.
+
 ### Referencia rápida
 
 | Método | Ruta | Rol | Descripción |

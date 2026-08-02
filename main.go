@@ -89,7 +89,7 @@ func main() {
 	outerMux := http.NewServeMux()
 	outerMux.Handle("GET /metrics", handleMetrics(metrics))
 	outerMux.Handle("/", limitBodySize(maxRequestBodyBytes, rateLimitMiddleware(generalLimiter, newRouter(db, auth))))
-	handler := corsMiddleware(cors, metricsMiddleware(metrics, outerMux))
+	handler := corsMiddleware(cors, metricsMiddleware(metrics, gzipMiddleware(outerMux)))
 
 	srv := &http.Server{Addr: httpAddr, Handler: handler}
 	go func() {
