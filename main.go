@@ -74,6 +74,11 @@ func main() {
 	generalLimiter := newRateLimiter(generalRateLimitPerSecond, generalRateLimitBurst)
 	generalLimiter.startPruneLoop(rateLimiterPruneInterval, stop)
 
+	cors := loadCORSConfig()
+	if cors.Enabled {
+		slog.Info("cors enabled", "allow_all", cors.AllowAll, "origins", cors.AllowedOrigins)
+	}
+
 	metrics := newMetricsCollector()
 
 	// /metrics lives outside the rate limit / body size chain — a scrape
@@ -84,7 +89,7 @@ func main() {
 	outerMux := http.NewServeMux()
 	outerMux.Handle("GET /metrics", handleMetrics(metrics))
 	outerMux.Handle("/", limitBodySize(maxRequestBodyBytes, rateLimitMiddleware(generalLimiter, newRouter(db, auth))))
-	handler := metricsMiddleware(metrics, outerMux)
+	handler := corsMiddleware(cors, metricsMiddleware(metrics, outerMux))
 
 	srv := &http.Server{Addr: httpAddr, Handler: handler}
 	go func() {

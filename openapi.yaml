@@ -756,6 +756,32 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /collections/{name}/export:
+    get:
+      tags: [collections]
+      summary: Volcar todos los items de una colección
+      operationId: exportDocuments
+      description: >
+        Cualquier usuario autenticado. Sin paginar (a diferencia de GET
+        .../items) — devuelve todos los items. Cada elemento tiene la misma
+        forma que un item de POST .../items/bulk, para poder recargar el
+        export troceándolo en lotes de a lo sumo 100.
+      parameters:
+        - $ref: "#/components/parameters/CollectionName"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Document" }
+        "404":
+          description: Colección no existe
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   securitySchemes:
     bearerAuth:

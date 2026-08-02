@@ -7,6 +7,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Todo esto está en `master`, sin cortar como release todavía.
 
 ### Added
+- CORS opcional (`CORS_ALLOWED_ORIGINS`): sin setear, sin cambios (sin headers); `*` o lista separada por comas habilita orígenes específicos, con manejo de preflight `OPTIONS`.
+- `GET /collections/{name}/export` — vuelca todos los items de una colección como JSON, sin paginar. Misma forma que un item de `POST .../items/bulk`, así que recargar un export es trocearlo en lotes de ≤100 y postearlos ahí (no hay endpoint de import separado).
 - `PUT /users/{username}/password` — admin resetea la contraseña de otro usuario sin conocer la actual (salida para cuentas bloqueadas).
 - [`openapi.yaml`](openapi.yaml): spec OpenAPI 3.0 completa de todos los endpoints (validada con Redocly CLI).
 - Bulk insert: `POST /items/bulk` y `POST /collections/{name}/items/bulk`, todo-o-nada (una sola transacción, sin resultados parciales), máximo 100 items por request.

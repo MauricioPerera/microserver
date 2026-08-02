@@ -213,6 +213,123 @@ func TestHTTPBulkInsertDocuments(t *testing.T) {
 	}
 }
 
+func TestHTTPExportRoundTripsThroughBulkInsert(t *testing.T) {
+	store, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer store.Close()
+
+	server := httptest.NewServer(newRouter(store, testAuth()))
+	defer server.Close()
+
+	body, _ := json.Marshal(createCollectionRequest{Name: "posts", Vector: true, Dimensions: 768})
+	resp := doAuthed(t, http.MethodPost, server.URL+"/collections", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /collections status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	docs := []documentRequest{
+		{Text: "post uno", Data: json.RawMessage(`{"autor":"ana"}`)},
+		{Text: "post dos", Data: json.RawMessage(`{"autor":"beto"}`)},
+	}
+	body, _ = json.Marshal(docs)
+	resp = doAuthed(t, http.MethodPost, server.URL+"/collections/posts/items/bulk", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /collections/posts/items/bulk status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = doAuthed(t, http.MethodGet, server.URL+"/collections/posts/export", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /collections/posts/export status=%d", resp.StatusCode)
+	}
+	var exported []documentRequest
+	if err := json.NewDecoder(resp.Body).Decode(&exported); err != nil {
+		t.Fatalf("decoding export: %v", err)
+	}
+	resp.Body.Close()
+	if len(exported) != 2 {
+		t.Fatalf("expected 2 exported documents, got %d", len(exported))
+	}
+
+	// reload the export straight into a fresh collection — proves the
+	// export shape is exactly what /items/bulk expects.
+	body, _ = json.Marshal(createCollectionRequest{Name: "posts_restored", Vector: true, Dimensions: 768})
+	resp = doAuthed(t, http.MethodPost, server.URL+"/collections", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /collections (restored) status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	body, _ = json.Marshal(exported)
+	resp = doAuthed(t, http.MethodPost, server.URL+"/collections/posts_restored/items/bulk", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /collections/posts_restored/items/bulk status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	coll, err := getCollection(store, "posts_restored")
+	if err != nil {
+		t.Fatalf("getCollection: %v", err)
+	}
+	restored, err := listDocuments(store, coll, 10, 0, nil, nil)
+	if err != nil {
+		t.Fatalf("listDocuments: %v", err)
+	}
+	if len(restored) != 2 {
+		t.Fatalf("expected 2 restored documents, got %d", len(restored))
+	}
+}
+
+func TestHTTPExportPaginatesInternallyPastOnePage(t *testing.T) {
+	store, err := openVecDB(":memory:")
+	if err != nil {
+		t.Fatalf("openVecDB: %v", err)
+	}
+	defer store.Close()
+
+	server := httptest.NewServer(newRouter(store, testAuth()))
+	defer server.Close()
+
+	// non-vector, so no embed() calls — fast enough to insert well past
+	// one export page (maxListLimit=1000) via repeated bulk inserts.
+	body, _ := json.Marshal(createCollectionRequest{Name: "bignotes", Vector: false})
+	resp := doAuthed(t, http.MethodPost, server.URL+"/collections", body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /collections status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	const total = 1500
+	for inserted := 0; inserted < total; inserted += bulkMaxItems {
+		batch := make([]documentRequest, bulkMaxItems)
+		for i := range batch {
+			batch[i] = documentRequest{Data: json.RawMessage(`{"n":` + strconv.Itoa(inserted+i) + `}`)}
+		}
+		body, _ := json.Marshal(batch)
+		resp := doAuthed(t, http.MethodPost, server.URL+"/collections/bignotes/items/bulk", body)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("bulk insert batch at %d: status=%d", inserted, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	resp = doAuthed(t, http.MethodGet, server.URL+"/collections/bignotes/export", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /collections/bignotes/export status=%d", resp.StatusCode)
+	}
+	var exported []documentRequest
+	if err := json.NewDecoder(resp.Body).Decode(&exported); err != nil {
+		t.Fatalf("decoding export: %v", err)
+	}
+	resp.Body.Close()
+	if len(exported) != total {
+		t.Fatalf("expected %d exported documents spanning multiple internal pages, got %d", total, len(exported))
+	}
+}
+
 func TestHTTPCollectionInjectionAttemptRejected(t *testing.T) {
 	store, err := openVecDB(":memory:")
 	if err != nil {

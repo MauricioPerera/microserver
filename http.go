@@ -80,6 +80,7 @@ func newRouter(store *VecStore, auth AuthConfig) http.Handler {
 	mux.Handle("GET /collections/{name}/search", authOnly(handleSearchDocuments(store)))
 	mux.Handle("GET /collections/{name}/aggregate", authOnly(handleAggregate(store)))
 	mux.Handle("GET /collections/{name}/fulltext", authOnly(handleFullTextSearch(store)))
+	mux.Handle("GET /collections/{name}/export", authOnly(handleExportDocuments(store)))
 
 	mux.Handle("PUT /users/me/password", authOnly(handleChangePassword(store)))
 	mux.Handle("POST /users", admin(handleCreateUser(store)))

@@ -100,6 +100,7 @@ El binario resultante es autocontenido (SQLite y `sqlite-vec` quedan enlazados a
 1. **Ollama corriendo con `embeddinggemma`**, alcanzable en la URL de `OLLAMA_URL` (default `http://localhost:11434/api/embed`, válido solo si ambos procesos comparten el mismo network namespace — no vale dentro de un contenedor, ver sección Docker).
 2. **Directorio de trabajo con permisos de escritura** — ahí se crean `vec.db`, `vec.db-wal`, `vec.db-shm` y `backups/`. Correr el binario siempre desde el mismo directorio (o fijar working directory en el servicio) para no perder el archivo de datos entre reinicios.
 3. **Puerto `8080` libre en loopback** — el proceso escucha en `127.0.0.1:8080` por default, no en todas las interfaces. Se cambia con la variable de entorno `HTTP_ADDR` (ej. `HTTP_ADDR=0.0.0.0:8080` si el reverse proxy corre en otro contenedor/host y necesita alcanzarlo por red).
+4. **`CORS_ALLOWED_ORIGINS`** — opcional, solo si un frontend en otro dominio va a llamar a esta API desde el browser. Sin setear: sin headers CORS (comportamiento de siempre, un browser bloquea la respuesta cross-origin igual). `*` habilita cualquier origen; o una lista separada por comas de orígenes exactos (`https://app.example.com,https://admin.example.com`).
 
 ### Pasos
 
@@ -253,6 +254,7 @@ Spec completa en [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0) — importable en 
 | DELETE | `/collections/{name}/items/{id}` | admin | Borrar un item (respeta referencias `restrict`/`set_null`). |
 | GET | `/collections/{name}/search` | cualquiera | Búsqueda semántica (solo colecciones con vector) — filtro y orden opcionales. |
 | GET | `/collections/{name}/fulltext` | cualquiera | Búsqueda de texto completo FTS5 sobre `text` (solo colecciones con vector). |
+| GET | `/collections/{name}/export` | cualquiera | Volcar todos los items como JSON (sin paginar). |
 | GET | `/collections/{name}/aggregate` | cualquiera | `count`/`sum`/`avg`/`min`/`max`, con `group_by` y filtro opcionales. |
 
 "cualquiera" = cualquier usuario autenticado, admin o read-only.
@@ -635,6 +637,20 @@ curl "http://localhost:8080/collections/documentos/fulltext?q=gato+AND+negro&cat
 ```
 
 **Errores:** `400` si `q` falta, si la colección no tiene vector, o si `q` es sintaxis FTS5 inválida (ej. comillas sin cerrar) — cualquier error de ejecución de la consulta se trata como error del cliente, no del servidor, porque el único punto de falla ahí es la sintaxis que mandó el cliente.
+
+### `GET /collections/{name}/export`
+
+Vuelca **todos** los items de la colección como un array JSON — sin paginar (a diferencia de `GET .../items`, que corta en `limit`/`offset`; internamente el servidor sí pagina en páginas de 1000 para no hacer una sola consulta SQL sin límite, pero eso es transparente para quien llama). Cada elemento tiene la misma forma que un item de `POST .../items/bulk` (`{"id","text","data"}`), a propósito: para recargar un export, se lo trocea en lotes de a lo sumo 100 y cada lote se manda tal cual a `POST .../items/bulk`.
+
+```bash
+curl http://localhost:8080/collections/documentos/export -H "Authorization: Bearer $TOKEN" > documentos.json
+# recarga (ejemplo con jq, en lotes de 100):
+jq -c --argjson n 100 '[range(0; length; $n) as $i | .[$i:$i+$n]] | .[]' documentos.json | while read -r lote; do
+  curl -X POST http://localhost:8080/collections/documentos/items/bulk -H "Authorization: Bearer $TOKEN" -d "$lote"
+done
+```
+
+**Errores:** `404` si la colección no existe.
 
 ### `GET /collections/{name}/aggregate`
 

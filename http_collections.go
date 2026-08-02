@@ -465,6 +465,41 @@ func handleSearchDocuments(store *VecStore) http.HandlerFunc {
 	}
 }
 
+// handleExportDocuments: GET /collections/{name}/export
+// Dumps every document in the collection as a JSON array — no pagination,
+// unlike GET .../items (fetched internally in maxListLimit-sized pages so
+// no single query is unbounded). Each element is shaped identically to a
+// POST .../items/bulk request item ({"id","text","data"}), so reloading a
+// collection is just chunking this array into batches of at most
+// bulkMaxItems and POSTing each to .../items/bulk.
+func handleExportDocuments(store *VecStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		coll, err := getCollection(store, r.PathValue("name"))
+		if err != nil {
+			if errors.Is(err, ErrCollectionNotFound) {
+				writeError(w, http.StatusNotFound, "collection not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		all := []Document{}
+		for offset := 0; ; offset += maxListLimit {
+			batch, err := listDocuments(store, coll, maxListLimit, offset, nil, nil)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			all = append(all, batch...)
+			if len(batch) < maxListLimit {
+				break
+			}
+		}
+		writeJSON(w, http.StatusOK, all)
+	}
+}
+
 // writeDocumentError maps the errors that insert/update/delete can return
 // to the right HTTP status: bad reference input is a 400, a blocked delete
 // (restrict) is a 409, everything else is a 500.
